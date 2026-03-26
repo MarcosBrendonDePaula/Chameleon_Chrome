@@ -1,0 +1,354 @@
+From 7b09fcabfc8fa21b08b422fcd2f45c8927d9c782 Mon Sep 17 00:00:00 2001
+From: Marcos <marcosbrendonaz@gmail.com>
+Date: Thu, 26 Mar 2026 18:05:12 -0300
+Subject: [PATCH 5/5] feat: combinatorial hardware profiles + fix platform
+ consistency
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Replace fixed 24 profiles with combinatorial system:
+  39 GPUs × 9 cores × 6 RAM × 5 textures = 10,530+ unique combinations
+- All profiles are Windows-only to match Sec-CH-UA-Platform HTTP header
+- Remove Mac/Linux profiles that caused platform mismatch detection
+- Revert brand spoofing (causes more harm than good)
+- Clean up navigator_ua_data.cc unused spoofing code
+
+Achieved Suspect Score 0 on Fingerprint Pro with clean proxy IP.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ .../core/execution_context/navigator_base.cc  | 217 ++++++++----------
+ .../renderer/core/frame/navigator_ua_data.cc  |  63 +----
+ 2 files changed, 105 insertions(+), 175 deletions(-)
+
+diff --git a/third_party/blink/renderer/core/execution_context/navigator_base.cc b/third_party/blink/renderer/core/execution_context/navigator_base.cc
+index 4cb069954d..886e856337 100644
+--- a/third_party/blink/renderer/core/execution_context/navigator_base.cc
++++ b/third_party/blink/renderer/core/execution_context/navigator_base.cc
+@@ -48,132 +48,117 @@ String GetReducedNavigatorPlatform() {
+ NavigatorBase::NavigatorBase(ExecutionContext* context)
+     : NavigatorLanguage(context), ExecutionContextClient(context) {}
+ 
+-// Chameleon: Hardware identity profiles.
+-// Each profile is a realistic combination of OS + GPU + CPU cores + RAM
+-// that actually exists in the real world. The seed picks one profile,
+-// and ALL signals stay consistent with that identity.
++// Chameleon: Combinatorial hardware identity system.
++// Each component (GPU, cores, RAM, texture) is selected independently
++// from the seed, creating thousands of unique combinations.
+ namespace {
++
++struct GpuInfo {
++  const char* vendor;
++  const char* renderer;
++};
++
++// GPU pool - all Windows Direct3D11
++constexpr GpuInfo kGpus[] = {
++    // NVIDIA
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 4080 (0x00002704) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti (0x00002782) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 (0x00002786) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Ti (0x00002803) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 (0x00002882) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 (0x00002204) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 (0x00002206) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 (0x00002484) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Ti (0x00002486) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3050 (0x00002507) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 2080 Ti (0x00001E04) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 2080 SUPER (0x00001E81) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 2070 SUPER (0x00001E84) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 2060 (0x00001F08) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER (0x000021C4) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti (0x00002182) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 (0x00001F82) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Ti (0x00001B06) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 (0x00001B80) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1070 (0x00001B81) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 6GB (0x00001C03) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1050 Ti (0x00001C82) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    // AMD
++    {"Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 7900 XTX (0x0000744C) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 7800 XT (0x00007480) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 7600 (0x00007480) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 6800 XT (0x000073BF) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 6700 XT (0x000073DF) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 6600 XT (0x000073EF) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 5700 XT (0x0000731F) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 580 (0x0000E366) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    // Intel
++    {"Google Inc. (Intel)", "ANGLE (Intel, Intel(R) Arc(TM) A770 Graphics (0x000056A1) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (Intel)", "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 770 (0x00004680) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 730 (0x00004C8A) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E92) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (Intel)", "ANGLE (Intel, Intel(R) HD Graphics 620 (0x00005916) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++    {"Google Inc. (Intel)", "ANGLE (Intel, Intel(R) HD Graphics 530 (0x00001912) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
++};
++constexpr int kGpuCount = 39;
++
++// CPU cores pool
++constexpr unsigned kCoresPool[] = {2, 4, 6, 8, 10, 12, 16, 20, 24};
++constexpr int kCoresCount = 9;
++
++// RAM pool (deviceMemory values)
++constexpr float kMemoryPool[] = {4.0f, 8.0f, 8.0f, 16.0f, 16.0f, 32.0f};
++constexpr int kMemoryCount = 6;
++
++// MAX_TEXTURE_SIZE pool
++constexpr int kTexturePool[] = {8192, 16384, 16384, 16384, 32768};
++constexpr int kTextureCount = 5;
++
++// Assembled profile from seed-derived component selection.
+ struct HardwareProfile {
+   const char* platform;
+   const char* ua_os_part;
+   const char* gpu_vendor;
+   const char* gpu_renderer;
+-  unsigned cores;       // hardwareConcurrency
+-  float memory;         // deviceMemory (GB)
+-  int max_texture;      // WebGL MAX_TEXTURE_SIZE
++  unsigned cores;
++  float memory;
++  int max_texture;
+ };
+ 
+-constexpr HardwareProfile kProfiles[] = {
+-    // === Windows + NVIDIA ===
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (NVIDIA)",
+-     "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     16, 16.0f, 32768},
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (NVIDIA)",
+-     "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 (0x00002786) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     12, 16.0f, 32768},
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (NVIDIA)",
+-     "ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 (0x00002206) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     12, 16.0f, 32768},
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (NVIDIA)",
+-     "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     8, 16.0f, 16384},
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (NVIDIA)",
+-     "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER (0x000021C4) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     8, 8.0f, 16384},
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (NVIDIA)",
+-     "ANGLE (NVIDIA, NVIDIA GeForce GTX 1050 Ti (0x00001C82) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     4, 8.0f, 16384},
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (NVIDIA)",
+-     "ANGLE (NVIDIA, NVIDIA GeForce RTX 2060 (0x00001F08) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     6, 16.0f, 16384},
+-    // === Windows + AMD ===
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (AMD)",
+-     "ANGLE (AMD, AMD Radeon RX 6800 XT (0x000073BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     12, 16.0f, 16384},
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (AMD)",
+-     "ANGLE (AMD, AMD Radeon RX 580 (0x0000E366) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     8, 8.0f, 16384},
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (AMD)",
+-     "ANGLE (AMD, AMD Radeon RX 7600 (0x00007480) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     8, 16.0f, 16384},
+-    // === Windows + Intel ===
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (Intel)",
+-     "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E92) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     8, 8.0f, 16384},
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (Intel)",
+-     "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     8, 16.0f, 16384},
+-    {"Win32", "Windows NT 10.0; Win64; x64",
+-     "Google Inc. (Intel)",
+-     "ANGLE (Intel, Intel(R) HD Graphics 620 (0x00005916) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+-     4, 8.0f, 8192},
+-    // === macOS + Apple Silicon ===
+-    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
+-     "Google Inc. (Apple)",
+-     "ANGLE (Apple, Apple M1, OpenGL 4.1)",
+-     8, 8.0f, 16384},
+-    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
+-     "Google Inc. (Apple)",
+-     "ANGLE (Apple, Apple M1 Pro, OpenGL 4.1)",
+-     10, 16.0f, 16384},
+-    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
+-     "Google Inc. (Apple)",
+-     "ANGLE (Apple, Apple M2, OpenGL 4.1)",
+-     8, 8.0f, 16384},
+-    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
+-     "Google Inc. (Apple)",
+-     "ANGLE (Apple, Apple M2 Pro, OpenGL 4.1)",
+-     12, 16.0f, 16384},
+-    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
+-     "Google Inc. (Apple)",
+-     "ANGLE (Apple, Apple M3, OpenGL 4.1)",
+-     8, 8.0f, 16384},
+-    // === macOS + Intel (older Macs) ===
+-    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
+-     "Google Inc. (Intel Inc.)",
+-     "ANGLE (Intel Inc., Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)",
+-     4, 8.0f, 16384},
+-    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
+-     "Google Inc. (AMD)",
+-     "ANGLE (AMD, AMD Radeon Pro 5500M, OpenGL 4.1)",
+-     8, 16.0f, 16384},
+-    // === Linux + NVIDIA ===
+-    {"Linux x86_64", "X11; Linux x86_64",
+-     "Google Inc. (NVIDIA Corporation)",
+-     "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3070/PCIe/SSE2, OpenGL 4.5)",
+-     8, 16.0f, 32768},
+-    {"Linux x86_64", "X11; Linux x86_64",
+-     "Google Inc. (NVIDIA Corporation)",
+-     "ANGLE (NVIDIA Corporation, NVIDIA GeForce GTX 1080 Ti/PCIe/SSE2, OpenGL 4.5)",
+-     8, 16.0f, 32768},
+-    // === Linux + AMD/Mesa ===
+-    {"Linux x86_64", "X11; Linux x86_64",
+-     "Google Inc. (X.Org)",
+-     "ANGLE (X.Org, AMD Radeon RX 570 (polaris10, LLVM 15.0.7, DRM 3.49, 6.1.0-18-amd64), OpenGL 4.6)",
+-     8, 8.0f, 16384},
+-    {"Linux x86_64", "X11; Linux x86_64",
+-     "Google Inc. (Intel)",
+-     "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)",
+-     8, 16.0f, 16384},
+-};
+-constexpr int kProfileCount = 24;
++HardwareProfile BuildProfile() {
++  HardwareProfile p;
++  p.platform = "Win32";
++  p.ua_os_part = "Windows NT 10.0; Win64; x64";
++
++  int gpu_idx = ChameleonNoise::GetNoiseInt(
++      ChameleonNoise::kSubsystemNavigator + 300, kGpuCount);
++  p.gpu_vendor = kGpus[gpu_idx].vendor;
++  p.gpu_renderer = kGpus[gpu_idx].renderer;
++
++  int cores_idx = ChameleonNoise::GetNoiseInt(
++      ChameleonNoise::kSubsystemNavigator + 301, kCoresCount);
++  p.cores = kCoresPool[cores_idx];
++
++  int mem_idx = ChameleonNoise::GetNoiseInt(
++      ChameleonNoise::kSubsystemNavigator + 302, kMemoryCount);
++  p.memory = kMemoryPool[mem_idx];
++
++  int tex_idx = ChameleonNoise::GetNoiseInt(
++      ChameleonNoise::kSubsystemNavigator + 303, kTextureCount);
++  p.max_texture = kTexturePool[tex_idx];
++
++  return p;
++}
+ 
+ const HardwareProfile& GetSelectedProfile() {
+-  int idx = ChameleonNoise::GetNoiseInt(
+-      ChameleonNoise::kSubsystemNavigator + 300, kProfileCount);
+-  return kProfiles[idx];
++  static HardwareProfile* profile = nullptr;
++  if (!profile) {
++    profile = new HardwareProfile(BuildProfile());
++  }
++  return *profile;
+ }
+ 
+ }  // namespace
+diff --git a/third_party/blink/renderer/core/frame/navigator_ua_data.cc b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
+index ba8bdca652..232179fc18 100644
+--- a/third_party/blink/renderer/core/frame/navigator_ua_data.cc
++++ b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
+@@ -13,63 +13,8 @@
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+ #include "third_party/blink/renderer/core/frame/web_feature_forward.h"
+ #include "third_party/blink/renderer/core/page/page.h"
+-#include "base/command_line.h"
+-#include "base/strings/string_split.h"
+-
+ namespace blink {
+ 
+-namespace {
+-// Chameleon: Parse --chameleon-brand="BrandName,MajorVer,FullVer"
+-struct ChameleonBrand {
+-  std::string name;        // e.g. "Google Chrome"
+-  std::string major_ver;   // e.g. "146"
+-  std::string full_ver;    // e.g. "146.0.7680.165"
+-  bool active = false;
+-};
+-
+-const ChameleonBrand& GetChameleonBrand() {
+-  static ChameleonBrand* brand = new ChameleonBrand();
+-  static bool initialized = false;
+-  if (!initialized) {
+-    initialized = true;
+-    if (base::CommandLine::InitializedForCurrentProcess()) {
+-      const base::CommandLine* cl = base::CommandLine::ForCurrentProcess();
+-      if (cl->HasSwitch("chameleon-brand")) {
+-        std::string val = cl->GetSwitchValueASCII("chameleon-brand");
+-        std::vector<std::string> parts = base::SplitString(
+-            val, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+-        if (parts.size() >= 3) {
+-          brand->name = parts[0];
+-          brand->major_ver = parts[1];
+-          brand->full_ver = parts[2];
+-          brand->active = true;
+-        }
+-      }
+-    }
+-  }
+-  return *brand;
+-}
+-
+-// Replace "Chromium" brand with the configured brand name and version.
+-String SpoofBrandName(const String& original) {
+-  const auto& b = GetChameleonBrand();
+-  if (!b.active) return original;
+-  if (original == "Chromium") return String::FromUTF8(b.name);
+-  return original;
+-}
+-
+-String SpoofBrandVersion(const String& original, bool full) {
+-  const auto& b = GetChameleonBrand();
+-  if (!b.active) return original;
+-  // Only replace versions that match the real Chromium major.
+-  // The grease brand versions should pass through unchanged.
+-  if (original.length() >= 2 && original[0] >= '1' && original[0] <= '9') {
+-    return String::FromUTF8(full ? b.full_ver : b.major_ver);
+-  }
+-  return original;
+-}
+-}  // namespace
+-
+ NavigatorUAData::NavigatorUAData(ExecutionContext* context)
+     : ExecutionContextClient(context) {
+   NavigatorUABrandVersion* dict = NavigatorUABrandVersion::Create();
+@@ -81,16 +26,16 @@ NavigatorUAData::NavigatorUAData(ExecutionContext* context)
+ void NavigatorUAData::AddBrandVersion(const String& brand,
+                                       const String& version) {
+   NavigatorUABrandVersion* dict = NavigatorUABrandVersion::Create();
+-  dict->setBrand(SpoofBrandName(brand));
+-  dict->setVersion(SpoofBrandVersion(version, false));
++  dict->setBrand(brand);
++  dict->setVersion(version);
+   brand_set_.push_back(dict);
+ }
+ 
+ void NavigatorUAData::AddBrandFullVersion(const String& brand,
+                                           const String& version) {
+   NavigatorUABrandVersion* dict = NavigatorUABrandVersion::Create();
+-  dict->setBrand(SpoofBrandName(brand));
+-  dict->setVersion(SpoofBrandVersion(version, true));
++  dict->setBrand(brand);
++  dict->setVersion(version);
+   full_version_list_.push_back(dict);
+ }
+ 
+-- 
+2.53.0.windows.2
+
