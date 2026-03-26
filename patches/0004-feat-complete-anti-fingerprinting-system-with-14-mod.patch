@@ -1,0 +1,2293 @@
+From 5255af549d4df55dc3439f2fafc2163332168824 Mon Sep 17 00:00:00 2001
+From: Marcos <marcosbrendonaz@gmail.com>
+Date: Thu, 26 Mar 2026 17:30:57 -0300
+Subject: [PATCH 4/4] feat: complete anti-fingerprinting system with 14 modules
+
+Chameleon Browser anti-fingerprinting system implemented natively in C++.
+Defeats Fingerprint Pro with unique visitor IDs per profile.
+
+Modules (Blink layer):
+- Canvas noise (getImageData, toDataURL, toBlob, measureText)
+- WebGL noise (readPixels, renderer/vendor spoofing, params, extensions shuffle)
+- Audio noise (getChannelData, OfflineAudioContext.startRendering)
+- WebRTC IP leak protection (filter host/srflx/prflx candidates)
+- DeviceMemory spoofing (consistent with hardware profile)
+- ClientRects sub-pixel noise
+- Screen spoofing (colorDepth, availHeight, outerHeight)
+- Locale override (navigator.language, Intl.DateTimeFormat locale)
+- Font enumeration blocking (OS-aware, measureText noise)
+- Navigator spoofing (platform, userAgent, hardwareConcurrency, maxTouchPoints)
+- Hardware identity profiles (24 realistic OS+GPU+cores+RAM combinations)
+- Brand spoofing via --chameleon-brand flag (configurable without rebuild)
+- Timezone spoofing (consistent with locale, via CHAMELEON_TZ env var)
+
+Modules (V8 layer):
+- Math noise (tan, sin, cos, atan2, log, exp, sinh, cosh, tanh)
+
+Infrastructure:
+- ChameleonNoise utility class with FNV-1a deterministic noise
+- Modular system via --chameleon-modules flag
+- Switch propagation to renderer processes
+- CHAMELEON_SEED/CHAMELEON_TZ env vars for V8/ICU integration
+- Night build cron system (night_build.cjs)
+- Leak check diagnostic script (leak_check.js)
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ CLAUDE.md                                     | 119 ++++++++++
+ build_chameleon.bat                           |  29 ++-
+ build_night.bat                               |  20 ++
+ .../renderer_host/render_process_host_impl.cc |   5 +
+ content/renderer/renderer_main.cc             |  42 ++++
+ gin/v8_initializer.cc                         |   2 +
+ kill_build.bat                                |  13 ++
+ leak_check.js                                 | 130 +++++++++++
+ night_build.cjs                               | 106 +++++++++
+ run_chameleon.bat                             | 152 ++++++++++++-
+ third_party/blink/common/switches.cc          |  15 ++
+ third_party/blink/public/common/switches.h    |   9 +
+ .../renderer/controller/blink_initializer.cc  |  43 ++++
+ third_party/blink/renderer/core/BUILD.gn      |   3 +
+ .../blink/renderer/core/chameleon/build.gni   |  10 +
+ .../core/chameleon/chameleon_noise.cc         | 149 +++++++++++++
+ .../renderer/core/chameleon/chameleon_noise.h |  77 +++++++
+ .../blink/renderer/core/dom/element.cc        |  27 +++
+ .../renderer/core/events/navigator_events.cc  |   3 +
+ .../core/execution_context/navigator_base.cc  | 204 +++++++++++++++++-
+ .../renderer/core/frame/local_dom_window.cc   |  10 +-
+ .../blink/renderer/core/frame/navigator.cc    |   3 +
+ .../frame/navigator_concurrent_hardware.cc    |   7 +-
+ .../core/frame/navigator_device_memory.cc     |   5 +
+ .../renderer/core/frame/navigator_language.cc |  15 ++
+ .../renderer/core/frame/navigator_ua_data.cc  |  62 +++++-
+ .../blink/renderer/core/frame/screen.cc       |  15 +-
+ .../core/html/canvas/html_canvas_element.cc   |  41 ++++
+ .../renderer/core/html/canvas/text_metrics.h  |   1 +
+ .../canvas2d/base_rendering_context_2d.cc     |  27 ++-
+ .../peerconnection/rtc_peer_connection.cc     |  11 +
+ .../renderer/modules/webaudio/audio_buffer.cc |  23 ++
+ .../modules/webaudio/offline_audio_context.cc |  24 +++
+ .../webgl/webgl_rendering_context_base.cc     |  93 +++++++-
+ .../renderer/platform/fonts/font_cache.cc     | 133 ++++++++++++
+ 35 files changed, 1610 insertions(+), 18 deletions(-)
+ create mode 100644 CLAUDE.md
+ create mode 100644 build_night.bat
+ create mode 100644 kill_build.bat
+ create mode 100644 leak_check.js
+ create mode 100644 night_build.cjs
+ create mode 100644 third_party/blink/renderer/core/chameleon/build.gni
+ create mode 100644 third_party/blink/renderer/core/chameleon/chameleon_noise.cc
+ create mode 100644 third_party/blink/renderer/core/chameleon/chameleon_noise.h
+
+diff --git a/CLAUDE.md b/CLAUDE.md
+new file mode 100644
+index 0000000000..7a9419f32e
+--- /dev/null
++++ b/CLAUDE.md
+@@ -0,0 +1,119 @@
++# CLAUDE.md
++
++This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
++
++## Project Overview
++
++Chameleon Browser is a Chromium fork with native C++ anti-fingerprinting protections. The branch `chameleon/dev` contains all Chameleon modifications on top of upstream Chromium. The goal is to make each browser profile produce a unique, deterministic fingerprint that resists cross-profile tracking by services like Fingerprint Pro.
++
++There is a **reference implementation** at `C:\Users\Marcos\Desktop\TEeste\packages\chameleon\src\noise\` — a JS injection-based version (using Patchright/Playwright) that successfully defeats Fingerprint Pro. Our Chromium C++ implementation must match its behavior. Always compare against the reference when adding or debugging modules.
++
++## Build Commands
++
++```bash
++# Incremental build (only recompiles changed files) - default 16 threads
++build_chameleon.bat
++
++# Full rebuild (runs gn gen first) - required after changing .gn/.gni files or args.gn
++build_chameleon.bat --full
++
++# From MSYS2/bash shell (Claude Code context)
++export DEPOT_TOOLS_WIN_TOOLCHAIN=0
++/c/depot_tools/autoninja -C out/Default chrome -j 16
++```
++
++Build config is at `out/Default/args.gn`. Current config: release build with `is_debug=false`, `is_component_build=true`, `symbol_level=0`.
++
++When only `.cc`/`.h` files change, incremental build works automatically. When `.gn`/`.gni` files or `args.gn` change, use `--full` or run `gn gen out/Default` manually.
++
++## Running / Testing
++
++```bash
++# Interactive launcher with profile management and module selection
++run_chameleon.bat
++
++# Direct CLI launch (all modules)
++out\Default\chrome.exe --user-data-dir="E:\chameleon_profiles\<name>" --chameleon-seed=<hex> --chameleon-locale=en-US,en --js-flags="--chameleon-math-noise --chameleon-math-seed=0x<hex>"
++
++# Specific modules only
++out\Default\chrome.exe --user-data-dir="..." --chameleon-seed=<hex> --chameleon-modules=canvas,webgl,audio,navigator,fonts
++
++# All modules disabled (baseline test)
++out\Default\chrome.exe --user-data-dir="..." --chameleon-seed=<hex> --chameleon-modules=none
++```
++
++Profiles stored at `E:\chameleon_profiles\`. Each profile has a unique `chameleon_seed.txt` (128-bit hex, crypto-generated). Same seed = same fingerprint.
++
++Test sites: fingerprint.com (primary target), browserleaks.com/canvas, browserleaks.com/webgl, browserleaks.com/webrtc, audiofingerprint.openwpm.com
++
++## Night Build System
++
++`night_build.cjs` is a cron-like Bun script that monitors the clock and runs builds between 3 AM - 7 AM. Run with `bun night_build.cjs`. It checks every 20 seconds and calls `gn gen` + `autoninja -j 16`.
++
++## Architecture: Chameleon Anti-Fingerprinting System
++
++### Core Infrastructure
++
++- **`third_party/blink/renderer/core/chameleon/chameleon_noise.h/.cc`** — Central utility class. Reads `--chameleon-seed` from CommandLine, provides deterministic noise via FNV-1a hash. `IsModuleEnabled(subsystem_id)` checks a bitmask populated from `--chameleon-modules`. All Blink-layer protection modules call into this class.
++- **`third_party/blink/public/common/switches.h` / `third_party/blink/common/switches.cc`** — Declares `kChameleonSeed`, `kChameleonLocale`, `kChameleonModules` command-line switches.
++- **`third_party/blink/renderer/core/chameleon/build.gni`** — GN include that adds Chameleon source files to the Blink core build. Imported by `third_party/blink/renderer/core/BUILD.gn`.
++
++### Anti-Fingerprint Modules (Blink layer)
++
++Each module guards its changes with `ChameleonNoise::IsModuleEnabled(kSubsystem...)`:
++
++| Module | ID | Flag | Files Modified | What it does |
++|--------|---:|------|----------------|--------------|
++| Canvas | 1 | `canvas` | `base_rendering_context_2d.cc`, `html_canvas_element.cc` | Pixel noise on getImageData/toDataURL/toBlob, measureText width noise |
++| WebGL | 2,11 | `webgl` | `webgl_rendering_context_base.cc` | readPixels noise, invisible tag on RENDERER/VENDOR strings |
++| WebGL Params | 13 | `webglparams` | `webgl_rendering_context_base.cc` | Spoofs MAX_TEXTURE_SIZE etc, shuffles getSupportedExtensions |
++| Audio | 3 | `audio` | `audio_buffer.cc`, `offline_audio_context.cc` | Noise on getChannelData (every 50 samples) + OfflineAudioContext.startRendering |
++| WebRTC | 4 | `webrtc` | `rtc_peer_connection.cc` | Filters host/srflx/prflx ICE candidates (C++ level) |
++| DeviceMemory | 5 | `memory` | `navigator_device_memory.cc` | Returns seed-derived value from {2, 4, 8, 16} |
++| ClientRects | 6 | `rects` | `element.cc` | Sub-pixel noise on getBoundingClientRect/getClientRects |
++| Screen | 7 | `screen` | `screen.cc`, `local_dom_window.cc` | colorDepth=32, pixelDepth=32, seed-derived taskbar offset on availHeight + outerHeight |
++| Locale | 8 | `locale` | `navigator_language.cc` | Overrides navigator.language/languages via --chameleon-locale |
++| Fonts | 9 | `fonts` | `font_cache.cc`, `base_rendering_context_2d.cc`, `text_metrics.h` | Blocks ~30% non-safe fonts, adds measureText width noise |
++| Navigator | 12 | `navigator` | `navigator_concurrent_hardware.cc`, `navigator.cc`, `navigator_events.cc` | Spoofs hardwareConcurrency, platform, maxTouchPoints |
++
++### Math Noise Module (V8 layer)
++
++Math noise operates inside V8, not Blink. It uses V8 flags instead of `ChameleonNoise`:
++
++- **`v8/src/flags/flag-definitions.h`** — Defines `--chameleon-math-noise` (bool) and `--chameleon-math-seed` (uint64).
++- **`v8/src/builtins/builtins-math.cc`** — C++ BUILTINs: `ChameleonMathTan`, `ChameleonMathSin`, `ChameleonMathCos`, `ChameleonMathAtan2`, `ChameleonMathLog`, `ChameleonMathExp`, `ChameleonMathSinh`, `ChameleonMathCosh`, `ChameleonMathTanh`. Uses multiplicative noise `r * (1 + noise)` at ~1e-14 level (matching reference). Skips result==0 and !isFinite.
++- **`v8/src/builtins/builtins-definitions.h`** — Registers all 9 Chameleon math builtins as CPP builtins.
++- **`v8/src/init/bootstrapper.cc`** — Conditionally installs Chameleon builtins when `v8_flags.chameleon_math_noise` is true, replacing the Torque-generated originals. The JIT (js-call-reducer.cc) won't inline CPP builtins, so noise is preserved even in optimized code.
++- Activated via `--js-flags="--chameleon-math-noise --chameleon-math-seed=0x<seed>"` (handled by `run_chameleon.bat`).
++- **V8 builtin pattern**: Use `args.atOrUndefined(isolate, N)` to get arguments, then `Object::ToNumber` with a local `Handle<Object>` variable. Never use `ASSIGN_RETURN_FAILURE_ON_EXCEPTION` with `args.at()` directly (it's a temporary).
++
++### Font Protection (Platform layer)
++
++Font enumeration blocking lives in `platform/fonts/font_cache.cc` which cannot import from `core/`. It reads `--chameleon-seed` and `--chameleon-modules` directly from `base::CommandLine` with its own seed parser and FNV-1a hash. Blocks ~30% of non-safe fonts based on seed hash. Safe fonts (Arial, Verdana, Segoe UI, etc.) are never blocked. Additionally, `measureText` in `base_rendering_context_2d.cc` applies multiplicative width noise via `TextMetrics::SetWidth()`.
++
++### Pattern for Adding New Modules
++
++1. Add a new `kSubsystem*` constant in `chameleon_noise.h`
++2. Add the module name mapping in `ModuleNameToBit()` in `chameleon_noise.cc`
++3. In the target Blink file, add `#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"`
++4. Guard changes with `if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystem*)) { ... }`
++5. If the file is in `platform/` (not `core/`), use `base::CommandLine` directly instead of `ChameleonNoise`
++6. If the file is in `v8/`, use V8 flags (`v8_flags.*`) and register in `builtins-definitions.h` + `bootstrapper.cc`
++7. Update `run_chameleon.bat` module list and help text
++8. Compare behavior against the reference implementation in `C:\Users\Marcos\Desktop\TEeste\packages\chameleon\src\noise\`
++
++## Key Constraints
++
++- **platform/ cannot depend on core/**: The Blink `platform/` layer has no access to `ChameleonNoise`. Use `base::CommandLine` directly (see `font_cache.cc` for the pattern).
++- **V8 has no access to Blink**: V8 modules use V8 flags (`v8_flags.*`) instead of Blink's `ChameleonNoise`. Pass seed via `--js-flags`.
++- **Debug vs Release**: Debug builds (`is_debug=true`) enable DCHECKs that cause STATUS_BREAKPOINT crashes on complex pages (e.g., fingerprint.com CSS animations in style_resolver.cc). Always use release build (`is_debug=false`, `dcheck_always_on=false`) for testing.
++- **`is_component_build=true`**: Builds many small DLLs for faster incremental linking. Keep this on for development.
++- **Chromium is huge**: ~28k+ build targets. Full rebuild takes 5+ hours. Always prefer incremental builds.
++- **Noise must be deterministic**: Same seed must produce same fingerprint across sessions. Use FNV-1a hash with seed, never `rand()`.
++- **Noise must be multiplicative for Math**: The reference uses `r * (1 + noise)` not `r + noise`. Additive noise doesn't affect fingerprinting services that check ratios.
++
++## Not Yet Implemented (compared to reference)
++
++- `Date.prototype.getTimezoneOffset` spoofing (requires V8 changes)
++- `Intl.DateTimeFormat` timezone spoofing (requires V8 changes)
++- These are lower priority since timezone is already exposed by the user's IP/proxy.
+diff --git a/build_chameleon.bat b/build_chameleon.bat
+index 6ea6da87cc..6ca387634a 100644
+--- a/build_chameleon.bat
++++ b/build_chameleon.bat
+@@ -8,9 +8,32 @@ echo.
+ set PATH=C:\depot_tools;%PATH%
+ set DEPOT_TOOLS_WIN_TOOLCHAIN=0
+ 
+-:: Compilar
+-echo [3/3] Compilando Chrome (isso vai demorar)...
+-call autoninja -C out/Default chrome
++:: Pegar numero de cores do sistema
++set MAX_CORES=%NUMBER_OF_PROCESSORS%
++
++:: Verificar se ja foi passado por argumento
++set JOBS=
++if not "%~1"=="" if not "%~1"=="--full" set JOBS=%~1
++if not "%~2"=="" set JOBS=%~2
++
++:: Se nao foi passado, usar 16 por padrao
++if not defined JOBS set JOBS=16
++if "%JOBS%"=="" set JOBS=14
++
++:: Validar: maximo = cores do sistema
++if %JOBS% GTR %MAX_CORES% set JOBS=%MAX_CORES%
++
++echo.
++echo CPU cores: %MAX_CORES% / Usando: %JOBS% jobs
++echo.
++
++:: Só roda gn gen se passado --full ou se out/Default não existir
++if "%~1"=="--full" call gn gen out/Default
++if not exist "out\Default\build.ninja" call gn gen out/Default
++
++:: Compilar (incremental - só recompila o que mudou)
++echo Compilando Chrome (incremental, -j %JOBS%)...
++call autoninja -C out/Default chrome -j %JOBS%
+ if %errorlevel% neq 0 (
+     echo.
+     echo ERRO: Build falhou!
+diff --git a/build_night.bat b/build_night.bat
+new file mode 100644
+index 0000000000..4ee41b9e53
+--- /dev/null
++++ b/build_night.bat
+@@ -0,0 +1,20 @@
++@echo off
++echo ============================================
++echo  Chameleon Browser - Night Build
++echo  Iniciado: %date% %time%
++echo ============================================
++
++:: Configurar ambiente
++set PATH=C:\depot_tools;%PATH%
++set DEPOT_TOOLS_WIN_TOOLCHAIN=0
++
++cd /d E:\CHAMALEON
++
++:: gn gen porque mudou args.gn
++call gn gen out/Default
++
++:: Compilar com 16 threads
++call autoninja -C out/Default chrome -j 16
++
++echo.
++echo Build finalizado: %date% %time%
+diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
+index e21982287a..5bbca33e00 100644
+--- a/content/browser/renderer_host/render_process_host_impl.cc
++++ b/content/browser/renderer_host/render_process_host_impl.cc
+@@ -3804,6 +3804,11 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
+       blink::switches::kShowPaintRects,
+       blink::switches::kTouchTextSelectionStrategy,
+       blink::switches::kJavaScriptFlags,
++      // Chameleon anti-fingerprinting switches.
++      blink::switches::kChameleonSeed,
++      blink::switches::kChameleonLocale,
++      blink::switches::kChameleonModules,
++      blink::switches::kChameleonBrand,
+       // Please keep these in alphabetical order. Compositor switches here
+       // should also be added to
+       // chrome/browser/ash/login/chrome_restart_request.cc.
+diff --git a/content/renderer/renderer_main.cc b/content/renderer/renderer_main.cc
+index 9dbe18fe20..43601e416d 100644
+--- a/content/renderer/renderer_main.cc
++++ b/content/renderer/renderer_main.cc
+@@ -14,6 +14,10 @@
+ #include "base/debug/leak_annotations.h"
+ #include "base/feature_list.h"
+ #include "base/i18n/rtl.h"
++#include "unicode/timezone.h"
++#include "unicode/unistr.h"
++#include "v8/include/v8.h"
++#include <cstdlib>  // _putenv
+ #include "base/message_loop/message_pump.h"
+ #include "base/message_loop/message_pump_type.h"
+ #include "base/metrics/histogram_functions.h"
+@@ -162,6 +166,44 @@ int RendererMain(MainFunctionParams parameters) {
+   base::apple::ScopedNSAutoreleasePool* pool = parameters.autorelease_pool;
+ #endif  // BUILDFLAG(IS_MAC)
+ 
++  // Chameleon: Set env vars VERY EARLY, before any ICU/V8 initialization.
++  if (command_line.HasSwitch("chameleon-seed")) {
++    std::string seed = command_line.GetSwitchValueASCII("chameleon-seed");
++    if (!seed.empty()) {
++      _putenv(("CHAMELEON_SEED=" + seed).c_str());
++    }
++  }
++  if (command_line.HasSwitch("chameleon-locale")) {
++    std::string locale = command_line.GetSwitchValueASCII("chameleon-locale");
++    size_t comma = locale.find(',');
++    if (comma != std::string::npos) locale = locale.substr(0, comma);
++
++    // Map locale to timezone and set env var for V8 ICUTimezoneCache.
++    const char* tz = "America/New_York";
++    if (locale.find("en-GB") == 0) tz = "Europe/London";
++    else if (locale.find("en-AU") == 0) tz = "Australia/Sydney";
++    else if (locale.find("de") == 0) tz = "Europe/Berlin";
++    else if (locale.find("fr") == 0) tz = "Europe/Paris";
++    else if (locale.find("ja") == 0) tz = "Asia/Tokyo";
++    else if (locale.find("zh") == 0) tz = "Asia/Shanghai";
++    else if (locale.find("ko") == 0) tz = "Asia/Seoul";
++    else if (locale.find("pt-BR") == 0) tz = "America/Sao_Paulo";
++    else if (locale.find("pt") == 0) tz = "Europe/Lisbon";
++    else if (locale.find("es") == 0) tz = "Europe/Madrid";
++    else if (locale.find("ru") == 0) tz = "Europe/Moscow";
++
++    _putenv(("CHAMELEON_TZ=" + std::string(tz)).c_str());
++    _putenv(("TZ=" + std::string(tz)).c_str());
++
++    // Set ICU default locale and timezone immediately.
++    base::i18n::SetICUDefaultLocale(locale);
++    icu::TimeZone* zone = icu::TimeZone::createTimeZone(
++        icu::UnicodeString::fromUTF8(tz));
++    icu::TimeZone::adoptDefault(zone);
++  }
++
++  // (Chameleon locale/timezone already set above, before MAC pool)
++
+ #if BUILDFLAG(IS_CHROMEOS)
+   // As the Zygote process starts up earlier than the browser process, it gets
+   // its own locale (at login time for Chrome OS). So we have to set the ICU
+diff --git a/gin/v8_initializer.cc b/gin/v8_initializer.cc
+index 6146bd47bf..ee287ec15d 100644
+--- a/gin/v8_initializer.cc
++++ b/gin/v8_initializer.cc
+@@ -13,6 +13,8 @@
+ #include <string>
+ #include <string_view>
+ #include <utility>
++
++#include "base/command_line.h"
+ #include <vector>
+ 
+ #include "base/bits.h"
+diff --git a/kill_build.bat b/kill_build.bat
+new file mode 100644
+index 0000000000..bf006e155f
+--- /dev/null
++++ b/kill_build.bat
+@@ -0,0 +1,13 @@
++@echo off
++echo ============================================
++echo  Chameleon - Parando build: %date% %time%
++echo ============================================
++
++:: Matar processos de compilação
++taskkill /F /IM ninja.exe 2>nul
++taskkill /F /IM autoninja.bat 2>nul
++taskkill /F /IM cl.exe 2>nul
++taskkill /F /IM link.exe 2>nul
++taskkill /F /IM siso.exe 2>nul
++
++echo Build interrompido com sucesso.
+diff --git a/leak_check.js b/leak_check.js
+new file mode 100644
+index 0000000000..194facce6b
+--- /dev/null
++++ b/leak_check.js
+@@ -0,0 +1,130 @@
++(function(){
++  console.log("=== CHAMELEON LEAK CHECK ===");
++
++  console.log("--- OS ---");
++  console.log("platform:", navigator.platform);
++  console.log("userAgent:", navigator.userAgent);
++  console.log("vendor:", navigator.vendor);
++
++  console.log("--- Hardware ---");
++  console.log("cores:", navigator.hardwareConcurrency);
++  console.log("memory:", navigator.deviceMemory);
++  console.log("maxTouch:", navigator.maxTouchPoints);
++
++  console.log("--- Screen ---");
++  console.log("screen:", screen.width + "x" + screen.height);
++  console.log("avail:", screen.availWidth + "x" + screen.availHeight);
++  console.log("colorDepth:", screen.colorDepth, "pixelDepth:", screen.pixelDepth);
++  console.log("outer:", window.outerWidth + "x" + window.outerHeight);
++  console.log("dpr:", window.devicePixelRatio);
++
++  console.log("--- Locale ---");
++  console.log("lang:", navigator.language);
++  console.log("langs:", JSON.stringify(navigator.languages));
++  console.log("tz:", Intl.DateTimeFormat().resolvedOptions().timeZone);
++  console.log("offset:", new Date().getTimezoneOffset());
++  console.log("intlLocale:", Intl.DateTimeFormat().resolvedOptions().locale);
++
++  console.log("--- WebGL ---");
++  var g = document.createElement("canvas").getContext("webgl");
++  var gd = null;
++  if (g) {
++    gd = g.getExtension("WEBGL_debug_renderer_info");
++    console.log("VENDOR:", g.getParameter(g.VENDOR));
++    console.log("RENDERER:", g.getParameter(g.RENDERER));
++    if (gd) {
++      console.log("UNMASKED_VENDOR:", g.getParameter(gd.UNMASKED_VENDOR_WEBGL));
++      console.log("UNMASKED_RENDERER:", g.getParameter(gd.UNMASKED_RENDERER_WEBGL));
++    }
++    console.log("MAX_TEX:", g.getParameter(g.MAX_TEXTURE_SIZE));
++    console.log("MAX_RB:", g.getParameter(g.MAX_RENDERBUFFER_SIZE));
++    console.log("EXTENSIONS:", g.getSupportedExtensions().length);
++  }
++
++  console.log("--- Canvas ---");
++  var cv = document.createElement("canvas");
++  cv.width = 200; cv.height = 50;
++  var cx = cv.getContext("2d");
++  cx.fillStyle = "#f60"; cx.fillRect(125, 1, 62, 20);
++  cx.fillStyle = "#069"; cx.font = "11pt Arial";
++  cx.fillText("Cwm fjordbank", 2, 15);
++  console.log("canvas len:", cv.toDataURL().length);
++
++  console.log("--- Audio ---");
++  var ac = new OfflineAudioContext(1, 5000, 44100);
++  var osc = ac.createOscillator();
++  osc.type = "triangle"; osc.frequency.value = 10000;
++  var cmp = ac.createDynamicsCompressor();
++  osc.connect(cmp); cmp.connect(ac.destination); osc.start(0);
++  ac.startRendering().then(function(b) {
++    var s = 0, ch = b.getChannelData(0);
++    for (var i = 4500; i < 5000; i++) s += Math.abs(ch[i]);
++    console.log("audio sum:", s);
++  });
++
++  console.log("--- Math ---");
++  console.log("tan(1):", Math.tan(1));
++  console.log("sin(1):", Math.sin(1));
++  console.log("cos(1):", Math.cos(1));
++  console.log("exp(1):", Math.exp(1));
++  console.log("sinh(1):", Math.sinh(1));
++
++  console.log("--- Fonts ---");
++  var tf = ["Arial","Verdana","Georgia","Courier New","Segoe UI",
++            "Calibri","Consolas","Comic Sans MS","Impact","Tahoma","Wingdings"];
++  var bf = ["monospace","sans-serif","serif"];
++  var det = [];
++  var sp = document.createElement("span");
++  sp.style.fontSize = "72px";
++  sp.style.visibility = "hidden";
++  sp.textContent = "mmmmmmmmmmlli";
++  document.body.appendChild(sp);
++  var bw = {};
++  bf.forEach(function(f) { sp.style.fontFamily = f; bw[f] = sp.offsetWidth; });
++  tf.forEach(function(f) {
++    var ok = false;
++    bf.forEach(function(b) {
++      sp.style.fontFamily = "\"" + f + "\"," + b;
++      if (sp.offsetWidth !== bw[b]) ok = true;
++    });
++    if (ok) det.push(f);
++  });
++  document.body.removeChild(sp);
++  console.log("fonts:", JSON.stringify(det));
++
++  console.log("--- measureText ---");
++  var mc = document.createElement("canvas").getContext("2d");
++  mc.font = "14px Arial";
++  console.log("width:", mc.measureText("Hello World fingerprint").width);
++
++  console.log("--- ClientRects ---");
++  var dv = document.createElement("div");
++  dv.style.cssText = "position:absolute;top:0;left:0;width:100px;height:50px";
++  dv.textContent = "test";
++  document.body.appendChild(dv);
++  var r = dv.getBoundingClientRect();
++  console.log("rect:", JSON.stringify({x: r.x, y: r.y, w: r.width, h: r.height}));
++  document.body.removeChild(dv);
++
++  console.log("--- Privacy ---");
++  console.log("webdriver:", navigator.webdriver);
++  console.log("plugins:", navigator.plugins.length);
++  console.log("pdf:", navigator.pdfViewerEnabled);
++
++  console.log("--- CHECKS ---");
++  var p = navigator.platform;
++  var u = navigator.userAgent;
++  var t = Intl.DateTimeFormat().resolvedOptions().timeZone;
++  var l = navigator.language;
++  if (p === "MacIntel" && u.indexOf("Windows") !== -1) console.warn("RED: Mac platform + Windows UA");
++  if (p === "Win32" && u.indexOf("Macintosh") !== -1) console.warn("RED: Win platform + Mac UA");
++  if (p === "Linux x86_64" && u.indexOf("Windows") !== -1) console.warn("RED: Linux platform + Windows UA");
++  if (l.startsWith("en") && t === "America/Sao_Paulo") console.warn("SUSPECT: English locale + Brazil timezone");
++  if (gd && g) {
++    var gpu = g.getParameter(gd.UNMASKED_RENDERER_WEBGL);
++    if (p === "MacIntel" && gpu.indexOf("Direct3D") !== -1) console.warn("RED: Mac + Direct3D GPU");
++    if (p === "Linux x86_64" && gpu.indexOf("Direct3D") !== -1) console.warn("RED: Linux + Direct3D GPU");
++  }
++
++  console.log("=== END ===");
++})();
+diff --git a/night_build.cjs b/night_build.cjs
+new file mode 100644
+index 0000000000..049e33b9fa
+--- /dev/null
++++ b/night_build.cjs
+@@ -0,0 +1,106 @@
++const { spawn, execSync } = require('child_process');
++
++const BUILD_START_HOUR = 3;  // 3 AM
++const BUILD_STOP_HOUR = 7;   // 7 AM
++const CHECK_INTERVAL = 20000; // checa a cada 20 segundos
++
++let buildProcess = null;
++let building = false;
++
++function log(msg) {
++  console.log(`[${new Date().toLocaleTimeString('pt-BR')}] ${msg}`);
++}
++
++function killBuild() {
++  if (buildProcess) {
++    log('Matando processo de build...');
++    try { buildProcess.kill(); } catch(e) {}
++    buildProcess = null;
++  }
++  ['ninja.exe', 'cl.exe', 'link.exe', 'siso.exe'].forEach(p => {
++    try { execSync(`taskkill /F /IM ${p} 2>nul`, { stdio: 'ignore' }); } catch(e) {}
++  });
++  building = false;
++  log('Build parado.');
++}
++
++function startBuild() {
++  building = true;
++  log('Iniciando build...');
++  log('Rodando gn gen...');
++
++  const gn = spawn('gn', ['gen', 'out/Default'], {
++    cwd: 'E:\\CHAMALEON',
++    stdio: ['ignore', 'pipe', 'pipe'],
++    shell: true,
++    env: { ...process.env, PATH: 'C:\\depot_tools;' + process.env.PATH, DEPOT_TOOLS_WIN_TOOLCHAIN: '0' }
++  });
++
++  gn.stdout.on('data', d => process.stdout.write(d));
++  gn.stderr.on('data', d => process.stderr.write(d));
++
++  gn.on('exit', (code) => {
++    log(`gn gen finalizado (código: ${code})`);
++    if (code !== 0) {
++      log('ERRO: gn gen falhou!');
++      building = false;
++      return;
++    }
++
++    log('Iniciando autoninja -j 16...');
++    buildProcess = spawn('autoninja', ['-C', 'out/Default', 'chrome', '-j', '16'], {
++      cwd: 'E:\\CHAMALEON',
++      stdio: ['ignore', 'pipe', 'pipe'],
++      shell: true,
++      env: { ...process.env, PATH: 'C:\\depot_tools;' + process.env.PATH, DEPOT_TOOLS_WIN_TOOLCHAIN: '0' }
++    });
++
++    buildProcess.stdout.on('data', d => process.stdout.write(d));
++    buildProcess.stderr.on('data', d => process.stderr.write(d));
++
++    buildProcess.on('exit', (code) => {
++      log(`Build finalizado com código: ${code}`);
++      buildProcess = null;
++      building = false;
++    });
++  });
++}
++
++function timeUntil(targetHour) {
++  const now = new Date();
++  const target = new Date(now);
++  target.setHours(targetHour, 0, 0, 0);
++  if (target <= now) target.setDate(target.getDate() + 1);
++  const diff = target - now;
++  const h = Math.floor(diff / 3600000);
++  const m = Math.floor((diff % 3600000) / 60000);
++  const s = Math.floor((diff % 60000) / 1000);
++  return `${h}h${String(m).padStart(2,'0')}m${String(s).padStart(2,'0')}s`;
++}
++
++function check() {
++  const hour = new Date().getHours();
++  const inWindow = hour >= BUILD_START_HOUR && hour < BUILD_STOP_HOUR;
++
++  if (inWindow && !building) {
++    log(`Horário de build detectado (${hour}h) - iniciando!`);
++    startBuild();
++  } else if (!inWindow && building) {
++    log(`Fora do horário de build (${hour}h) - parando!`);
++    killBuild();
++  } else if (inWindow && building) {
++    log(`Compilando... Para em ${timeUntil(BUILD_STOP_HOUR)}`);
++  } else {
++    log(`Aguardando... Inicia em ${timeUntil(BUILD_START_HOUR)}`);
++  }
++}
++
++log('=== Chameleon Night Build - Cron Mode ===');
++log(`Build: ${BUILD_START_HOUR}:00 - ${BUILD_STOP_HOUR}:00`);
++log(`Checando a cada ${CHECK_INTERVAL / 1000}s`);
++log('Deixe rodando. Ctrl+C para cancelar.');
++log('');
++
++// Checa imediatamente e depois a cada 30s
++check();
++setInterval(check, CHECK_INTERVAL);
+diff --git a/run_chameleon.bat b/run_chameleon.bat
+index 122ef8fb36..084d62685e 100644
+--- a/run_chameleon.bat
++++ b/run_chameleon.bat
+@@ -1,9 +1,153 @@
+ @echo off
+ echo ============================================
+-echo  Chameleon Browser - Test Run
++echo  Chameleon Browser - Anti-Fingerprint Launch
+ echo ============================================
+ echo.
+-echo Iniciando com perfil isolado...
+-echo Perfil: E:\CHAMALEON\chameleon_profile
++
++set BASE_DIR=E:\chameleon_profiles
++
++:: Criar pasta base se nao existir
++if not exist "%BASE_DIR%" mkdir "%BASE_DIR%"
++
++:: Listar perfis existentes
++echo Perfis existentes:
++echo -------------------
++set COUNT=0
++for /d %%D in ("%BASE_DIR%\*") do (
++    set /a COUNT+=1
++    call echo   [%%COUNT%%] %%~nxD
++)
++if %COUNT%==0 echo   (nenhum perfil encontrado)
+ echo.
+-start "" "E:\CHAMALEON\out\Default\chrome.exe" --user-data-dir="E:\CHAMALEON\chameleon_profile"
++echo   [N] Criar novo perfil
++echo   [Q] Sair
++echo.
++set /p CHOICE="Escolha uma opcao: "
++
++:: Sair
++if /i "%CHOICE%"=="Q" exit /b 0
++
++:: Criar novo perfil
++if /i "%CHOICE%"=="N" goto :NEW_PROFILE
++
++:: Selecionar perfil existente por numero
++set IDX=0
++for /d %%D in ("%BASE_DIR%\*") do (
++    set /a IDX+=1
++    call set "FOUND_%%IDX%%=%%D"
++)
++call set "PROFILE=%%FOUND_%CHOICE%%%"
++if not defined PROFILE (
++    echo Opcao invalida!
++    pause
++    exit /b 1
++)
++goto :SELECT_MODULES
++
++:NEW_PROFILE
++echo.
++set /p PROFILE_NAME="Nome do novo perfil: "
++if "%PROFILE_NAME%"=="" (
++    echo Nome nao pode ser vazio!
++    pause
++    exit /b 1
++)
++set PROFILE=%BASE_DIR%\%PROFILE_NAME%
++if exist "%PROFILE%" (
++    echo Perfil "%PROFILE_NAME%" ja existe! Abrindo ele...
++    goto :SELECT_MODULES
++)
++mkdir "%PROFILE%"
++echo Perfil "%PROFILE_NAME%" criado.
++goto :SELECT_MODULES
++
++:SELECT_MODULES
++echo.
++echo ============================================
++echo  Modulos de Protecao
++echo ============================================
++echo.
++echo   [1] Todos os modulos (padrao)
++echo   [2] Nenhum modulo (desabilitado)
++echo   [3] Selecionar modulos individuais
++echo.
++set /p MOD_CHOICE="Escolha: "
++
++set MODULES_FLAG=
++if "%MOD_CHOICE%"=="2" set MODULES_FLAG=--chameleon-modules=none
++if "%MOD_CHOICE%"=="3" goto :PICK_MODULES
++goto :LAUNCH
++
++:PICK_MODULES
++echo.
++echo Modulos disponiveis (digite separado por virgula):
++echo   canvas      - Canvas fingerprint noise
++echo   webgl       - WebGL readPixels + renderer/vendor noise
++echo   webglparams - WebGL parameter spoofing (MAX_TEXTURE_SIZE etc)
++echo   audio       - Web Audio noise
++echo   webrtc      - WebRTC IP leak protection
++echo   memory      - DeviceMemory spoofing
++echo   rects       - ClientRects sub-pixel noise
++echo   screen      - Screen properties spoofing
++echo   locale      - Navigator language override
++echo   navigator   - Navigator properties (platform, cores, touchpoints)
++echo   fonts       - Font enumeration blocking
++echo   math        - Math constants noise (tan, sin, cos, etc)
++echo.
++echo Exemplo: canvas,webgl,audio,navigator,fonts
++echo.
++set /p MODULES_LIST="Modulos: "
++if "%MODULES_LIST%"=="" (
++    echo Nenhum modulo selecionado, usando todos.
++    set MODULES_FLAG=
++    goto :LAUNCH
++)
++set MODULES_FLAG=--chameleon-modules=%MODULES_LIST%
++goto :LAUNCH
++
++:LAUNCH
++echo.
++
++set SEED_FILE=%PROFILE%\chameleon_seed.txt
++
++:: Gerar seed com criptografia forte se nao existir
++if not exist "%SEED_FILE%" (
++    echo Gerando novo Chameleon seed...
++    powershell -Command "$bytes = New-Object byte[] 16; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes); [System.IO.File]::WriteAllText('%SEED_FILE%', [BitConverter]::ToString($bytes).Replace('-','').ToLower())"
++)
++
++:: Ler seed do arquivo
++set /p SEED=<"%SEED_FILE%"
++
++:: Detectar se math esta nos modulos (para ativar --js-flags)
++set JS_FLAGS=
++set MATH_ENABLED=0
++if not defined MODULES_FLAG set MATH_ENABLED=1
++if defined MODULES_FLAG (
++    echo %MODULES_FLAG% | findstr /i "math" >nul && set MATH_ENABLED=1
++)
++if "%MODULES_FLAG%"=="--chameleon-modules=none" set MATH_ENABLED=0
++if "%MATH_ENABLED%"=="1" (
++    set JS_FLAGS=--js-flags="--chameleon-math-noise --chameleon-math-seed=0x%SEED%"
++)
++
++echo ============================================
++echo  Lancando Chameleon Browser
++echo ============================================
++echo  Perfil: %PROFILE%
++echo  Seed: %SEED%
++if defined MODULES_FLAG (
++    echo  Modulos: %MODULES_FLAG%
++) else (
++    echo  Modulos: todos ativos
++)
++if "%MATH_ENABLED%"=="1" echo  Math noise: ativado
++echo ============================================
++echo.
++
++start "" "E:\CHAMALEON\out\Default\chrome.exe" ^
++    --user-data-dir="%PROFILE%" ^
++    --chameleon-seed=%SEED% ^
++    --chameleon-locale=en-US,en ^
++    %MODULES_FLAG% ^
++    %JS_FLAGS%
+diff --git a/third_party/blink/common/switches.cc b/third_party/blink/common/switches.cc
+index 8c41e20019..3281b5625e 100644
+--- a/third_party/blink/common/switches.cc
++++ b/third_party/blink/common/switches.cc
+@@ -184,5 +184,20 @@ const char kDisableReduceAcceptLanguage[] = "disable-reduce-accept-language";
+ // A switch that controls XSLT availability via enterprise policy.
+ const char kXSLTEnabledPolicy[] = "xslt-enabled-policy";
+ 
++// Chameleon: 128-bit hex seed for deterministic anti-fingerprinting noise.
++const char kChameleonSeed[] = "chameleon-seed";
++
++// Chameleon: Comma-separated locale override (e.g. "en-US,en").
++const char kChameleonLocale[] = "chameleon-locale";
++
++// Chameleon: Comma-separated list of active modules (e.g. "canvas,webgl").
++// If omitted, all modules are active when --chameleon-seed is set.
++const char kChameleonModules[] = "chameleon-modules";
++
++// Chameleon: Browser brand spoofing. Format: "BrandName,MajorVersion,FullVersion"
++// Example: "Google Chrome,146,146.0.7680.165"
++// If omitted, uses the real Chromium branding.
++const char kChameleonBrand[] = "chameleon-brand";
++
+ }  // namespace switches
+ }  // namespace blink
+diff --git a/third_party/blink/public/common/switches.h b/third_party/blink/public/common/switches.h
+index bca7d37b86..90ad6e3e2d 100644
+--- a/third_party/blink/public/common/switches.h
++++ b/third_party/blink/public/common/switches.h
+@@ -65,6 +65,15 @@ BLINK_COMMON_EXPORT extern const char kDisableStandardizedBrowserZoom[];
+ BLINK_COMMON_EXPORT extern const char kWebAudioBypassOutputBufferingOptOut[];
+ BLINK_COMMON_EXPORT extern const char kDisableReduceAcceptLanguage[];
+ BLINK_COMMON_EXPORT extern const char kXSLTEnabledPolicy[];
++
++// Chameleon: Anti-fingerprinting seed (128-bit hex string)
++BLINK_COMMON_EXPORT extern const char kChameleonSeed[];
++// Chameleon: Locale override (comma-separated, e.g. "en-US,en")
++BLINK_COMMON_EXPORT extern const char kChameleonLocale[];
++// Chameleon: Comma-separated active modules (canvas,webgl,audio,webrtc,memory,rects,screen,locale)
++BLINK_COMMON_EXPORT extern const char kChameleonModules[];
++// Chameleon: Brand spoofing "BrandName,MajorVersion,FullVersion"
++BLINK_COMMON_EXPORT extern const char kChameleonBrand[];
+ }  // namespace switches
+ }  // namespace blink
+ 
+diff --git a/third_party/blink/renderer/controller/blink_initializer.cc b/third_party/blink/renderer/controller/blink_initializer.cc
+index 4d1f2acf58..fd06c656e5 100644
+--- a/third_party/blink/renderer/controller/blink_initializer.cc
++++ b/third_party/blink/renderer/controller/blink_initializer.cc
+@@ -35,6 +35,9 @@
+ #include <utility>
+ 
+ #include "base/command_line.h"
++#include "base/i18n/rtl.h"
++#include "unicode/timezone.h"
++#include "unicode/unistr.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "build/build_config.h"
+ #include "mojo/public/cpp/bindings/binder_map.h"
+@@ -153,6 +156,46 @@ void InitializeCommon(Platform* platform, mojo::BinderMap* binders) {
+   // BlinkInitializer::Initialize() must be called before InitializeMainThread
+   GetBlinkInitializer().Initialize();
+ 
++  // Chameleon: Set ICU locale + timezone before V8 init so that
++  // Intl.DateTimeFormat and Date use the spoofed values.
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("chameleon-locale")) {
++    std::string locale =
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++            "chameleon-locale");
++    size_t comma = locale.find(',');
++    if (comma != std::string::npos) locale = locale.substr(0, comma);
++    base::i18n::SetICUDefaultLocale(locale);
++
++    // Map locale to timezone.
++    const char* tz = "America/New_York";
++    if (locale.find("en-GB") == 0) tz = "Europe/London";
++    else if (locale.find("en-AU") == 0) tz = "Australia/Sydney";
++    else if (locale.find("de") == 0) tz = "Europe/Berlin";
++    else if (locale.find("fr") == 0) tz = "Europe/Paris";
++    else if (locale.find("ja") == 0) tz = "Asia/Tokyo";
++    else if (locale.find("zh") == 0) tz = "Asia/Shanghai";
++    else if (locale.find("ko") == 0) tz = "Asia/Seoul";
++    else if (locale.find("pt-BR") == 0) tz = "America/Sao_Paulo";
++    else if (locale.find("pt") == 0) tz = "Europe/Lisbon";
++    else if (locale.find("es") == 0) tz = "Europe/Madrid";
++    else if (locale.find("ru") == 0) tz = "Europe/Moscow";
++
++    icu::TimeZone* zone = icu::TimeZone::createTimeZone(
++        icu::UnicodeString::fromUTF8(tz));
++    icu::TimeZone::adoptDefault(zone);
++  }
++
++  // Chameleon: Set V8 math noise flags directly before V8 init.
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("chameleon-seed")) {
++    std::string seed =
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++            "chameleon-seed");
++    if (!seed.empty()) {
++      v8::V8::SetFlagsFromString("--chameleon-math-noise");
++      std::string seed_flag = "--chameleon-math-seed=0x" + seed;
++      v8::V8::SetFlagsFromString(seed_flag.c_str(), seed_flag.size());
++    }
++  }
+   blink::V8Initializer::InitializeIsolateHolder(
+       blink::V8ContextSnapshot::GetReferenceTable(),
+       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+diff --git a/third_party/blink/renderer/core/BUILD.gn b/third_party/blink/renderer/core/BUILD.gn
+index ec5134061d..ea9c497afb 100644
+--- a/third_party/blink/renderer/core/BUILD.gn
++++ b/third_party/blink/renderer/core/BUILD.gn
+@@ -23,6 +23,7 @@ import("//third_party/blink/renderer/core/animation/build.gni")
+ import("//third_party/blink/renderer/core/animation_frame/build.gni")
+ import("//third_party/blink/renderer/core/annotation/build.gni")
+ import("//third_party/blink/renderer/core/canvas_interventions/build.gni")
++import("//third_party/blink/renderer/core/chameleon/build.gni")
+ import("//third_party/blink/renderer/core/clipboard/build.gni")
+ import("//third_party/blink/renderer/core/content_capture/build.gni")
+ import("//third_party/blink/renderer/core/context_features/build.gni")
+@@ -277,6 +278,7 @@ component("core") {
+   sources += rebase_path(blink_core_sources_canvas_interventions,
+                          "",
+                          "canvas_interventions")
++  sources += rebase_path(blink_core_sources_chameleon, "", "chameleon")
+   sources += rebase_path(blink_core_sources_clipboard, "", "clipboard")
+   sources +=
+       rebase_path(blink_core_sources_content_capture, "", "content_capture")
+@@ -1472,6 +1474,7 @@ source_set("unit_tests") {
+   sources += rebase_path(blink_core_tests_canvas_interventions,
+                          "",
+                          "canvas_interventions")
++  sources += rebase_path(blink_core_tests_chameleon, "", "chameleon")
+   sources += rebase_path(blink_core_tests_clipboard, "", "clipboard")
+   sources +=
+       rebase_path(blink_core_tests_content_capture, "", "content_capture")
+diff --git a/third_party/blink/renderer/core/chameleon/build.gni b/third_party/blink/renderer/core/chameleon/build.gni
+new file mode 100644
+index 0000000000..b51297f761
+--- /dev/null
++++ b/third_party/blink/renderer/core/chameleon/build.gni
+@@ -0,0 +1,10 @@
++# Copyright 2025 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++blink_core_sources_chameleon = [
++  "chameleon_noise.cc",
++  "chameleon_noise.h",
++]
++
++blink_core_tests_chameleon = []
+diff --git a/third_party/blink/renderer/core/chameleon/chameleon_noise.cc b/third_party/blink/renderer/core/chameleon/chameleon_noise.cc
+new file mode 100644
+index 0000000000..fb309b20db
+--- /dev/null
++++ b/third_party/blink/renderer/core/chameleon/chameleon_noise.cc
+@@ -0,0 +1,149 @@
++// Copyright 2025 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
++
++#include <cstdlib>
++#include <string>
++
++#include "base/command_line.h"
++#include "base/strings/string_split.h"
++#include "third_party/blink/public/common/switches.h"
++
++namespace blink {
++
++// FNV-1a constants (same as canvas_interventions/noise_hash.cc)
++namespace {
++constexpr uint64_t kFnvOffset = 0xcbf29ce484222325ULL;
++constexpr uint64_t kFnvPrime = 0x00000100000001b3ULL;
++
++uint64_t FnvHash(uint64_t seed, uint64_t value) {
++  uint64_t hash = seed ^ kFnvOffset;
++  for (int i = 0; i < 8; ++i) {
++    hash ^= (value >> (i * 8)) & 0xFF;
++    hash *= kFnvPrime;
++  }
++  return hash;
++}
++
++// Map module name string to subsystem bitmask.
++uint32_t ModuleNameToBit(const std::string& name) {
++  if (name == "canvas") return 1u << ChameleonNoise::kSubsystemCanvas;
++  if (name == "webgl") return (1u << ChameleonNoise::kSubsystemWebGL) |
++                              (1u << ChameleonNoise::kSubsystemWebGLRenderer);
++  if (name == "audio") return 1u << ChameleonNoise::kSubsystemAudio;
++  if (name == "webrtc") return 1u << ChameleonNoise::kSubsystemWebRTC;
++  if (name == "memory") return 1u << ChameleonNoise::kSubsystemDeviceMemory;
++  if (name == "rects") return 1u << ChameleonNoise::kSubsystemClientRects;
++  if (name == "screen") return 1u << ChameleonNoise::kSubsystemScreen;
++  if (name == "locale") return 1u << ChameleonNoise::kSubsystemLocale;
++  if (name == "fonts") return 1u << ChameleonNoise::kSubsystemFonts;
++  if (name == "math") return 1u << ChameleonNoise::kSubsystemMath;
++  if (name == "navigator") return 1u << ChameleonNoise::kSubsystemNavigator;
++  if (name == "webglparams") return 1u << ChameleonNoise::kSubsystemWebGLParams;
++  return 0;
++}
++}  // namespace
++
++bool ChameleonNoise::initialized_ = false;
++bool ChameleonNoise::enabled_ = false;
++uint64_t ChameleonNoise::seed_ = 0;
++uint32_t ChameleonNoise::enabled_modules_ = 0xFFFFFFFF;
++
++void ChameleonNoise::EnsureInitialized() {
++  if (initialized_) {
++    return;
++  }
++
++  // Guard against being called before CommandLine is initialized.
++  if (!base::CommandLine::InitializedForCurrentProcess()) {
++    return;
++  }
++
++  initialized_ = true;
++
++  const base::CommandLine* command_line =
++      base::CommandLine::ForCurrentProcess();
++  if (!command_line->HasSwitch(switches::kChameleonSeed)) {
++    enabled_ = false;
++    return;
++  }
++
++  std::string seed_hex =
++      command_line->GetSwitchValueASCII(switches::kChameleonSeed);
++  if (seed_hex.empty()) {
++    enabled_ = false;
++    return;
++  }
++
++  // Parse hex string to uint64_t (take first 16 hex chars = 64 bits)
++  seed_ = 0;
++  for (size_t i = 0; i < seed_hex.size() && i < 16; ++i) {
++    char c = seed_hex[i];
++    uint64_t nibble = 0;
++    if (c >= '0' && c <= '9') {
++      nibble = c - '0';
++    } else if (c >= 'a' && c <= 'f') {
++      nibble = c - 'a' + 10;
++    } else if (c >= 'A' && c <= 'F') {
++      nibble = c - 'A' + 10;
++    }
++    seed_ = (seed_ << 4) | nibble;
++  }
++
++  enabled_ = (seed_ != 0);
++
++  // Parse --chameleon-modules if present.
++  if (command_line->HasSwitch(switches::kChameleonModules)) {
++    std::string modules_str =
++        command_line->GetSwitchValueASCII(switches::kChameleonModules);
++    if (modules_str == "none") {
++      enabled_modules_ = 0;
++    } else if (modules_str == "all" || modules_str.empty()) {
++      enabled_modules_ = 0xFFFFFFFF;
++    } else {
++      enabled_modules_ = 0;
++      std::vector<std::string> parts = base::SplitString(
++          modules_str, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++      for (const auto& part : parts) {
++        enabled_modules_ |= ModuleNameToBit(part);
++      }
++    }
++  }
++  // If --chameleon-modules is not set, enabled_modules_ stays 0xFFFFFFFF (all).
++}
++
++bool ChameleonNoise::IsEnabled() {
++  EnsureInitialized();
++  return enabled_;
++}
++
++bool ChameleonNoise::IsModuleEnabled(uint32_t subsystem_id) {
++  EnsureInitialized();
++  if (!enabled_) {
++    return false;
++  }
++  return (enabled_modules_ & (1u << subsystem_id)) != 0;
++}
++
++uint64_t ChameleonNoise::GetSeed() {
++  EnsureInitialized();
++  return seed_;
++}
++
++double ChameleonNoise::GetNoiseValue(uint32_t subsystem_id) {
++  EnsureInitialized();
++  uint64_t hash = FnvHash(seed_, static_cast<uint64_t>(subsystem_id));
++  return static_cast<double>(hash) / static_cast<double>(UINT64_MAX);
++}
++
++int ChameleonNoise::GetNoiseInt(uint32_t subsystem_id, int max_value) {
++  if (max_value <= 0) {
++    return 0;
++  }
++  double noise = GetNoiseValue(subsystem_id);
++  return static_cast<int>(noise * max_value) % max_value;
++}
++
++}  // namespace blink
+diff --git a/third_party/blink/renderer/core/chameleon/chameleon_noise.h b/third_party/blink/renderer/core/chameleon/chameleon_noise.h
+new file mode 100644
+index 0000000000..7b8d768624
+--- /dev/null
++++ b/third_party/blink/renderer/core/chameleon/chameleon_noise.h
+@@ -0,0 +1,77 @@
++// Copyright 2025 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CHAMELEON_CHAMELEON_NOISE_H_
++#define THIRD_PARTY_BLINK_RENDERER_CORE_CHAMELEON_CHAMELEON_NOISE_H_
++
++#include <cstdint>
++
++#include "third_party/blink/renderer/core/core_export.h"
++
++namespace blink {
++
++// Chameleon anti-fingerprinting noise system.
++// Reads a seed from --chameleon-seed command line flag and provides
++// deterministic pseudo-random values for various fingerprinting surfaces.
++// Each subsystem gets a unique noise stream derived from the seed.
++//
++// Module control via --chameleon-modules=canvas,webgl,audio,...
++// If --chameleon-modules is omitted, all modules are active.
++// Use --chameleon-modules=none to disable all modules.
++class CORE_EXPORT ChameleonNoise {
++ public:
++  // Returns true if --chameleon-seed was provided.
++  static bool IsEnabled();
++
++  // Returns true if the specific module is enabled.
++  // Checks both --chameleon-seed and --chameleon-modules.
++  static bool IsModuleEnabled(uint32_t subsystem_id);
++
++  // Returns the raw 64-bit seed (parsed from hex).
++  static uint64_t GetSeed();
++
++  // Returns a deterministic double in [0, 1) for a given subsystem ID.
++  static double GetNoiseValue(uint32_t subsystem_id);
++
++  // Returns a deterministic int in [0, max_value) for a given subsystem ID.
++  static int GetNoiseInt(uint32_t subsystem_id, int max_value);
++
++  // Subsystem IDs for different fingerprinting surfaces.
++  static constexpr uint32_t kSubsystemCanvas = 1;
++  static constexpr uint32_t kSubsystemWebGL = 2;
++  static constexpr uint32_t kSubsystemAudio = 3;
++  static constexpr uint32_t kSubsystemWebRTC = 4;
++  static constexpr uint32_t kSubsystemDeviceMemory = 5;
++  static constexpr uint32_t kSubsystemClientRects = 6;
++  static constexpr uint32_t kSubsystemScreen = 7;
++  static constexpr uint32_t kSubsystemLocale = 8;
++  static constexpr uint32_t kSubsystemFonts = 9;
++  static constexpr uint32_t kSubsystemMath = 10;
++  static constexpr uint32_t kSubsystemWebGLRenderer = 11;
++  static constexpr uint32_t kSubsystemNavigator = 12;
++  static constexpr uint32_t kSubsystemWebGLParams = 13;
++
++ private:
++  static void EnsureInitialized();
++
++  static bool initialized_;
++  static bool enabled_;
++  static uint64_t seed_;
++
++  // Bitmask of enabled modules. Bit N = subsystem ID N.
++  // 0xFFFFFFFF means all modules active (default).
++  static uint32_t enabled_modules_;
++};
++
++// Hardware profile accessors - returns values from the seed-selected
++// hardware identity (OS + GPU + cores + RAM). Defined in navigator_base.cc.
++CORE_EXPORT const char* ChameleonGetGpuVendor();
++CORE_EXPORT const char* ChameleonGetGpuRenderer();
++CORE_EXPORT unsigned ChameleonGetCores();
++CORE_EXPORT float ChameleonGetMemory();
++CORE_EXPORT int ChameleonGetMaxTextureSize();
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_CHAMELEON_CHAMELEON_NOISE_H_
+diff --git a/third_party/blink/renderer/core/dom/element.cc b/third_party/blink/renderer/core/dom/element.cc
+index c7bff7fa9c..179dcc20d0 100644
+--- a/third_party/blink/renderer/core/dom/element.cc
++++ b/third_party/blink/renderer/core/dom/element.cc
+@@ -26,6 +26,7 @@
+ 
+ #include "third_party/blink/renderer/core/dom/element.h"
+ 
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ #include <algorithm>
+ #include <bitset>
+ #include <limits>
+@@ -3434,6 +3435,20 @@ DOMRectList* Element::getClientRects() {
+     GetDocument().AdjustRectForScrollAndAbsoluteZoom(rect,
+                                                      *element_layout_object);
+   }
++
++  // Chameleon: Add sub-pixel noise to each client rect.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemClientRects)) {
++    double noise = ChameleonNoise::GetNoiseValue(
++        ChameleonNoise::kSubsystemClientRects);
++    float offset = static_cast<float>((noise - 0.5) * 0.002);
++    for (auto& rect : rects) {
++      rect.set_x(rect.x() + offset);
++      rect.set_y(rect.y() + offset);
++      rect.set_width(rect.width() + offset);
++      rect.set_height(rect.height() + offset);
++    }
++  }
++
+   return MakeGarbageCollected<DOMRectList>(rects);
+ }
+ 
+@@ -3480,6 +3495,18 @@ gfx::RectF Element::GetBoundingClientRectNoLifecycleUpdate() const {
+   DCHECK(element_layout_object);
+   GetDocument().AdjustRectForScrollAndAbsoluteZoom(result,
+                                                    *element_layout_object);
++
++  // Chameleon: Add sub-pixel noise to client rect dimensions.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemClientRects)) {
++    double noise = ChameleonNoise::GetNoiseValue(
++        ChameleonNoise::kSubsystemClientRects);
++    float offset = static_cast<float>((noise - 0.5) * 0.002);
++    result.set_x(result.x() + offset);
++    result.set_y(result.y() + offset);
++    result.set_width(result.width() + offset);
++    result.set_height(result.height() + offset);
++  }
++
+   return result;
+ }
+ 
+diff --git a/third_party/blink/renderer/core/events/navigator_events.cc b/third_party/blink/renderer/core/events/navigator_events.cc
+index a57561775c..b45e0b67b7 100644
+--- a/third_party/blink/renderer/core/events/navigator_events.cc
++++ b/third_party/blink/renderer/core/events/navigator_events.cc
+@@ -34,10 +34,13 @@
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/frame/navigator.h"
+ #include "third_party/blink/renderer/core/frame/settings.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ 
+ namespace blink {
+ 
+ int32_t NavigatorEvents::maxTouchPoints(Navigator& navigator) {
++  // Chameleon: Don't spoof maxTouchPoints - returning non-zero on a
++  // desktop is a red flag. Let the real value through.
+   LocalDOMWindow* window = navigator.DomWindow();
+   return window ? window->GetFrame()->GetSettings()->GetMaxTouchPoints() : 0;
+ }
+diff --git a/third_party/blink/renderer/core/execution_context/navigator_base.cc b/third_party/blink/renderer/core/execution_context/navigator_base.cc
+index cccfafe8f9..4cb069954d 100644
+--- a/third_party/blink/renderer/core/execution_context/navigator_base.cc
++++ b/third_party/blink/renderer/core/execution_context/navigator_base.cc
+@@ -4,9 +4,11 @@
+ 
+ #include "third_party/blink/renderer/core/execution_context/navigator_base.h"
+ 
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "build/build_config.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+ #include "third_party/blink/renderer/core/frame/navigator_concurrent_hardware.h"
+ #include "third_party/blink/renderer/core/probe/core_probes.h"
+@@ -46,12 +48,212 @@ String GetReducedNavigatorPlatform() {
+ NavigatorBase::NavigatorBase(ExecutionContext* context)
+     : NavigatorLanguage(context), ExecutionContextClient(context) {}
+ 
++// Chameleon: Hardware identity profiles.
++// Each profile is a realistic combination of OS + GPU + CPU cores + RAM
++// that actually exists in the real world. The seed picks one profile,
++// and ALL signals stay consistent with that identity.
++namespace {
++struct HardwareProfile {
++  const char* platform;
++  const char* ua_os_part;
++  const char* gpu_vendor;
++  const char* gpu_renderer;
++  unsigned cores;       // hardwareConcurrency
++  float memory;         // deviceMemory (GB)
++  int max_texture;      // WebGL MAX_TEXTURE_SIZE
++};
++
++constexpr HardwareProfile kProfiles[] = {
++    // === Windows + NVIDIA ===
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (NVIDIA)",
++     "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     16, 16.0f, 32768},
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (NVIDIA)",
++     "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 (0x00002786) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     12, 16.0f, 32768},
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (NVIDIA)",
++     "ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 (0x00002206) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     12, 16.0f, 32768},
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (NVIDIA)",
++     "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     8, 16.0f, 16384},
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (NVIDIA)",
++     "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER (0x000021C4) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     8, 8.0f, 16384},
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (NVIDIA)",
++     "ANGLE (NVIDIA, NVIDIA GeForce GTX 1050 Ti (0x00001C82) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     4, 8.0f, 16384},
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (NVIDIA)",
++     "ANGLE (NVIDIA, NVIDIA GeForce RTX 2060 (0x00001F08) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     6, 16.0f, 16384},
++    // === Windows + AMD ===
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (AMD)",
++     "ANGLE (AMD, AMD Radeon RX 6800 XT (0x000073BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     12, 16.0f, 16384},
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (AMD)",
++     "ANGLE (AMD, AMD Radeon RX 580 (0x0000E366) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     8, 8.0f, 16384},
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (AMD)",
++     "ANGLE (AMD, AMD Radeon RX 7600 (0x00007480) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     8, 16.0f, 16384},
++    // === Windows + Intel ===
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (Intel)",
++     "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E92) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     8, 8.0f, 16384},
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (Intel)",
++     "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     8, 16.0f, 16384},
++    {"Win32", "Windows NT 10.0; Win64; x64",
++     "Google Inc. (Intel)",
++     "ANGLE (Intel, Intel(R) HD Graphics 620 (0x00005916) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     4, 8.0f, 8192},
++    // === macOS + Apple Silicon ===
++    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
++     "Google Inc. (Apple)",
++     "ANGLE (Apple, Apple M1, OpenGL 4.1)",
++     8, 8.0f, 16384},
++    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
++     "Google Inc. (Apple)",
++     "ANGLE (Apple, Apple M1 Pro, OpenGL 4.1)",
++     10, 16.0f, 16384},
++    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
++     "Google Inc. (Apple)",
++     "ANGLE (Apple, Apple M2, OpenGL 4.1)",
++     8, 8.0f, 16384},
++    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
++     "Google Inc. (Apple)",
++     "ANGLE (Apple, Apple M2 Pro, OpenGL 4.1)",
++     12, 16.0f, 16384},
++    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
++     "Google Inc. (Apple)",
++     "ANGLE (Apple, Apple M3, OpenGL 4.1)",
++     8, 8.0f, 16384},
++    // === macOS + Intel (older Macs) ===
++    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
++     "Google Inc. (Intel Inc.)",
++     "ANGLE (Intel Inc., Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)",
++     4, 8.0f, 16384},
++    {"MacIntel", "Macintosh; Intel Mac OS X 10_15_7",
++     "Google Inc. (AMD)",
++     "ANGLE (AMD, AMD Radeon Pro 5500M, OpenGL 4.1)",
++     8, 16.0f, 16384},
++    // === Linux + NVIDIA ===
++    {"Linux x86_64", "X11; Linux x86_64",
++     "Google Inc. (NVIDIA Corporation)",
++     "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3070/PCIe/SSE2, OpenGL 4.5)",
++     8, 16.0f, 32768},
++    {"Linux x86_64", "X11; Linux x86_64",
++     "Google Inc. (NVIDIA Corporation)",
++     "ANGLE (NVIDIA Corporation, NVIDIA GeForce GTX 1080 Ti/PCIe/SSE2, OpenGL 4.5)",
++     8, 16.0f, 32768},
++    // === Linux + AMD/Mesa ===
++    {"Linux x86_64", "X11; Linux x86_64",
++     "Google Inc. (X.Org)",
++     "ANGLE (X.Org, AMD Radeon RX 570 (polaris10, LLVM 15.0.7, DRM 3.49, 6.1.0-18-amd64), OpenGL 4.6)",
++     8, 8.0f, 16384},
++    {"Linux x86_64", "X11; Linux x86_64",
++     "Google Inc. (Intel)",
++     "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)",
++     8, 16.0f, 16384},
++};
++constexpr int kProfileCount = 24;
++
++const HardwareProfile& GetSelectedProfile() {
++  int idx = ChameleonNoise::GetNoiseInt(
++      ChameleonNoise::kSubsystemNavigator + 300, kProfileCount);
++  return kProfiles[idx];
++}
++
++}  // namespace
++
++// Public accessors for other modules (WebGL, deviceMemory, etc.)
++const char* ChameleonGetGpuVendor() {
++  return GetSelectedProfile().gpu_vendor;
++}
++
++const char* ChameleonGetGpuRenderer() {
++  return GetSelectedProfile().gpu_renderer;
++}
++
++unsigned ChameleonGetCores() {
++  return GetSelectedProfile().cores;
++}
++
++float ChameleonGetMemory() {
++  return GetSelectedProfile().memory;
++}
++
++int ChameleonGetMaxTextureSize() {
++  return GetSelectedProfile().max_texture;
++}
++
+ String NavigatorBase::userAgent() const {
+   ExecutionContext* execution_context = GetExecutionContext();
+-  return execution_context ? execution_context->UserAgent() : String();
++  if (!execution_context) return String();
++
++  String ua = execution_context->UserAgent();
++
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemNavigator)) {
++    const HardwareProfile& profile = GetSelectedProfile();
++    wtf_size_t paren_start = ua.find('(');
++    wtf_size_t paren_end = ua.find(')');
++    if (paren_start != kNotFound && paren_end != kNotFound && paren_end > paren_start) {
++      StringBuilder sb;
++      sb.Append(ua.Left(paren_start + 1));
++      sb.Append(profile.ua_os_part);
++      sb.Append(ua.Substring(paren_end));
++      ua = sb.ToString();
++    }
++  }
++
++  // Chameleon: Replace version in UA string based on --chameleon-brand.
++  if (base::CommandLine::InitializedForCurrentProcess()) {
++    const base::CommandLine* cl = base::CommandLine::ForCurrentProcess();
++    if (cl->HasSwitch("chameleon-brand")) {
++      std::string val = cl->GetSwitchValueASCII("chameleon-brand");
++      // Parse "BrandName,MajorVer,FullVer"
++      size_t c1 = val.find(',');
++      size_t c2 = val.find(',', c1 + 1);
++      if (c1 != std::string::npos && c2 != std::string::npos) {
++        std::string major_ver = val.substr(c1 + 1, c2 - c1 - 1);
++        // Replace "Chrome/148.0.0.0" with "Chrome/146.0.0.0"
++        String chrome_prefix = "Chrome/";
++        wtf_size_t chrome_pos = ua.find(chrome_prefix);
++        if (chrome_pos != kNotFound) {
++          wtf_size_t ver_start = chrome_pos + chrome_prefix.length();
++          wtf_size_t dot_pos = ua.find('.', ver_start);
++          if (dot_pos != kNotFound) {
++            StringBuilder sb;
++            sb.Append(ua.Left(ver_start));
++            sb.Append(String::FromUTF8(major_ver));
++            sb.Append(ua.Substring(dot_pos));
++            ua = sb.ToString();
++          }
++        }
++      }
++    }
++  }
++
++  return ua;
+ }
+ 
+ String NavigatorBase::platform() const {
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemNavigator)) {
++    const HardwareProfile& profile = GetSelectedProfile();
++    return String(profile.platform);
++  }
+ #if BUILDFLAG(IS_ANDROID)
+   // We need to check the ReduceUserAgentMinorVersion feature flag for
+   // Android WebView, which does not currently ship a reduced User-Agent.
+diff --git a/third_party/blink/renderer/core/frame/local_dom_window.cc b/third_party/blink/renderer/core/frame/local_dom_window.cc
+index 87856b74d5..0bdeceac25 100644
+--- a/third_party/blink/renderer/core/frame/local_dom_window.cc
++++ b/third_party/blink/renderer/core/frame/local_dom_window.cc
+@@ -25,6 +25,7 @@
+  */
+ 
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ 
+ #include <memory>
+ #include <optional>
+@@ -1616,7 +1617,14 @@ int LocalDOMWindow::outerHeight() const {
+         lroundf(chrome_client.RootWindowRect(*frame).height() *
+                 chrome_client.GetScreenInfo(*frame).device_scale_factor));
+   }
+-  return chrome_client.RootWindowRect(*frame).height();
++  int h = chrome_client.RootWindowRect(*frame).height();
++  // Chameleon: Subtract seed-derived taskbar offset to match screen.availHeight.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemScreen)) {
++    int offset = 30 + ChameleonNoise::GetNoiseInt(
++        ChameleonNoise::kSubsystemScreen, 20);
++    h = std::max(h - offset, 0);
++  }
++  return h;
+ }
+ 
+ int LocalDOMWindow::outerWidth() const {
+diff --git a/third_party/blink/renderer/core/frame/navigator.cc b/third_party/blink/renderer/core/frame/navigator.cc
+index 583f05f8dd..c857367df8 100644
+--- a/third_party/blink/renderer/core/frame/navigator.cc
++++ b/third_party/blink/renderer/core/frame/navigator.cc
+@@ -33,6 +33,7 @@
+ #include "third_party/blink/renderer/core/loader/frame_loader.h"
+ #include "third_party/blink/renderer/core/page/page.h"
+ #include "third_party/blink/renderer/core/probe/core_probes.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ #include "third_party/blink/renderer/platform/language.h"
+ 
+ namespace blink {
+@@ -56,6 +57,8 @@ String Navigator::vendorSub() const {
+ }
+ 
+ String Navigator::platform() const {
++  // Note: platform spoofing removed - changing "Win32" to "Linux x86_64"
++  // is a red flag for fingerprinting services (inconsistent with User-Agent).
+   // TODO(955620): Consider changing devtools overrides to only allow overriding
+   // the platform with a frozen platform to distinguish between
+   // mobile and desktop when ReduceUserAgent is enabled.
+diff --git a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+index f5c0db2d1b..ee26861cf4 100644
+--- a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
++++ b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+@@ -5,11 +5,16 @@
+ #include "third_party/blink/renderer/core/frame/navigator_concurrent_hardware.h"
+ 
+ #include "base/system/sys_info.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ 
+ namespace blink {
+ 
+ unsigned NavigatorConcurrentHardware::hardwareConcurrency() const {
+-  return static_cast<unsigned>(base::SysInfo::NumberOfProcessors());
++  unsigned real_cores = static_cast<unsigned>(base::SysInfo::NumberOfProcessors());
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemNavigator)) {
++    return ChameleonGetCores();
++  }
++  return real_cores;
+ }
+ 
+ }  // namespace blink
+diff --git a/third_party/blink/renderer/core/frame/navigator_device_memory.cc b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+index 05fa33e456..f6e218965b 100644
+--- a/third_party/blink/renderer/core/frame/navigator_device_memory.cc
++++ b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+@@ -8,10 +8,15 @@
+ #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ 
+ namespace blink {
+ 
+ float NavigatorDeviceMemory::deviceMemory() const {
++  // Chameleon: Return seed-derived device memory value.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemNavigator)) {
++    return ChameleonGetMemory();
++  }
+   return ApproximatedDeviceMemory::GetApproximatedDeviceMemory();
+ }
+ 
+diff --git a/third_party/blink/renderer/core/frame/navigator_language.cc b/third_party/blink/renderer/core/frame/navigator_language.cc
+index 75cd346131..cf8311f028 100644
+--- a/third_party/blink/renderer/core/frame/navigator_language.cc
++++ b/third_party/blink/renderer/core/frame/navigator_language.cc
+@@ -11,6 +11,7 @@
+ #include "third_party/blink/renderer/core/probe/core_probes.h"
+ #include "third_party/blink/renderer/platform/language.h"
+ #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ 
+ namespace blink {
+ 
+@@ -69,6 +70,20 @@ void NavigatorLanguage::SetLanguagesForTesting(const String& languages) {
+ }
+ 
+ void NavigatorLanguage::EnsureUpdatedLanguage() {
++  // Chameleon: Override locale if --chameleon-locale is set.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemLocale)) {
++    const base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
++    if (cmd->HasSwitch(blink::switches::kChameleonLocale)) {
++      std::string locale_str =
++          cmd->GetSwitchValueASCII(blink::switches::kChameleonLocale);
++      if (!locale_str.empty()) {
++        languages_ = ParseAndSanitize(String::FromUTF8(locale_str));
++        languages_dirty_ = false;
++        return;
++      }
++    }
++  }
++
+   String accept_languages_override;
+   probe::ApplyAcceptLanguageOverride(execution_context_,
+                                      &accept_languages_override);
+diff --git a/third_party/blink/renderer/core/frame/navigator_ua_data.cc b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
+index 772f670609..ba8bdca652 100644
+--- a/third_party/blink/renderer/core/frame/navigator_ua_data.cc
++++ b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
+@@ -13,9 +13,63 @@
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+ #include "third_party/blink/renderer/core/frame/web_feature_forward.h"
+ #include "third_party/blink/renderer/core/page/page.h"
++#include "base/command_line.h"
++#include "base/strings/string_split.h"
+ 
+ namespace blink {
+ 
++namespace {
++// Chameleon: Parse --chameleon-brand="BrandName,MajorVer,FullVer"
++struct ChameleonBrand {
++  std::string name;        // e.g. "Google Chrome"
++  std::string major_ver;   // e.g. "146"
++  std::string full_ver;    // e.g. "146.0.7680.165"
++  bool active = false;
++};
++
++const ChameleonBrand& GetChameleonBrand() {
++  static ChameleonBrand* brand = new ChameleonBrand();
++  static bool initialized = false;
++  if (!initialized) {
++    initialized = true;
++    if (base::CommandLine::InitializedForCurrentProcess()) {
++      const base::CommandLine* cl = base::CommandLine::ForCurrentProcess();
++      if (cl->HasSwitch("chameleon-brand")) {
++        std::string val = cl->GetSwitchValueASCII("chameleon-brand");
++        std::vector<std::string> parts = base::SplitString(
++            val, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++        if (parts.size() >= 3) {
++          brand->name = parts[0];
++          brand->major_ver = parts[1];
++          brand->full_ver = parts[2];
++          brand->active = true;
++        }
++      }
++    }
++  }
++  return *brand;
++}
++
++// Replace "Chromium" brand with the configured brand name and version.
++String SpoofBrandName(const String& original) {
++  const auto& b = GetChameleonBrand();
++  if (!b.active) return original;
++  if (original == "Chromium") return String::FromUTF8(b.name);
++  return original;
++}
++
++String SpoofBrandVersion(const String& original, bool full) {
++  const auto& b = GetChameleonBrand();
++  if (!b.active) return original;
++  // Only replace versions that match the real Chromium major.
++  // The grease brand versions should pass through unchanged.
++  if (original.length() >= 2 && original[0] >= '1' && original[0] <= '9') {
++    return String::FromUTF8(full ? b.full_ver : b.major_ver);
++  }
++  return original;
++}
++}  // namespace
++
+ NavigatorUAData::NavigatorUAData(ExecutionContext* context)
+     : ExecutionContextClient(context) {
+   NavigatorUABrandVersion* dict = NavigatorUABrandVersion::Create();
+@@ -27,16 +81,16 @@ NavigatorUAData::NavigatorUAData(ExecutionContext* context)
+ void NavigatorUAData::AddBrandVersion(const String& brand,
+                                       const String& version) {
+   NavigatorUABrandVersion* dict = NavigatorUABrandVersion::Create();
+-  dict->setBrand(brand);
+-  dict->setVersion(version);
++  dict->setBrand(SpoofBrandName(brand));
++  dict->setVersion(SpoofBrandVersion(version, false));
+   brand_set_.push_back(dict);
+ }
+ 
+ void NavigatorUAData::AddBrandFullVersion(const String& brand,
+                                           const String& version) {
+   NavigatorUABrandVersion* dict = NavigatorUABrandVersion::Create();
+-  dict->setBrand(brand);
+-  dict->setVersion(version);
++  dict->setBrand(SpoofBrandName(brand));
++  dict->setVersion(SpoofBrandVersion(version, true));
+   full_version_list_.push_back(dict);
+ }
+ 
+diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink/renderer/core/frame/screen.cc
+index 69ffc2b05f..92943863d9 100644
+--- a/third_party/blink/renderer/core/frame/screen.cc
++++ b/third_party/blink/renderer/core/frame/screen.cc
+@@ -37,6 +37,7 @@
+ #include "third_party/blink/renderer/core/page/chrome_client.h"
+ #include "ui/display/screen_info.h"
+ #include "ui/display/screen_infos.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ 
+ namespace blink {
+ 
+@@ -91,6 +92,11 @@ int Screen::width() const {
+ }
+ 
+ unsigned Screen::colorDepth() const {
++  // Chameleon: Return 32 to match reference implementation.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemScreen)) {
++    return 32u;
++  }
++
+   // "If the user agent does not know the color depth or does not want to
+   // return it for privacy considerations, it should return 24."
+   //
+@@ -124,7 +130,14 @@ int Screen::availTop() const {
+ int Screen::availHeight() const {
+   if (!DomWindow())
+     return 0;
+-  return GetRect(/*available=*/true).height();
++  int h = GetRect(/*available=*/true).height();
++  // Chameleon: Subtract seed-derived taskbar height offset.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemScreen)) {
++    int offset = 30 + ChameleonNoise::GetNoiseInt(
++        ChameleonNoise::kSubsystemScreen, 20);
++    h = std::max(h - offset, 0);
++  }
++  return h;
+ }
+ 
+ int Screen::availWidth() const {
+diff --git a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc b/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
+index 6b580c9292..c25db59244 100644
+--- a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
++++ b/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
+@@ -123,6 +123,10 @@
+ #include "third_party/blink/renderer/platform/graphics/web_graphics_context_3d_video_frame_pool.h"
+ #include "third_party/blink/renderer/platform/heap/thread_state.h"
+ #include "third_party/blink/renderer/platform/image-encoders/image_encoder_utils.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
++#include "third_party/blink/renderer/core/canvas_interventions/noise_hash.h"
++#include "third_party/blink/renderer/core/canvas_interventions/noise_helper.h"
++#include "third_party/blink/public/common/fingerprinting_protection/noise_token.h"
+ #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/wtf/functional.h"
+@@ -1319,6 +1323,21 @@ String HTMLCanvasElement::ToDataURLInternal(
+     if (!data_buffer)
+       return String("data:,");
+ 
++    // Chameleon: Apply deterministic noise to canvas pixel data before encoding.
++    if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemCanvas)) {
++      int w = image_bitmap->width();
++      int h = image_bitmap->height();
++      if (w > 0 && h > 0) {
++        base::span<const uint8_t> const_pixels = data_buffer->PixelData();
++        base::span<uint8_t> pixels(
++            const_cast<uint8_t*>(const_pixels.data()), const_pixels.size());
++        NoiseToken token(ChameleonNoise::GetSeed());
++        NoiseHash hash(token);
++        hash.Update(static_cast<uint64_t>(ChameleonNoise::kSubsystemCanvas));
++        NoisePixels(hash, pixels, w, h);
++      }
++    }
++
+     String data_url = data_buffer->ToDataURL(encoding_mime_type, quality);
+     base::TimeDelta elapsed_time = base::TimeTicks::Now() - start_time;
+     float sqrt_pixels =
+@@ -1424,6 +1443,28 @@ void HTMLCanvasElement::toBlob(V8BlobCallback* callback,
+ 
+   CanvasAsyncBlobCreator* async_creator = nullptr;
+   scoped_refptr<StaticBitmapImage> image_bitmap = Snapshot(kBackBuffer);
++
++  // Chameleon: Apply deterministic noise to canvas pixel data for toBlob.
++  if (image_bitmap && ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemCanvas)) {
++    scoped_refptr<StaticBitmapImage> cpu_image = image_bitmap->MakeUnaccelerated();
++    if (cpu_image) {
++      sk_sp<SkImage> sk_img = cpu_image->PaintImageForCurrentFrame().GetSwSkImage();
++      if (sk_img) {
++        SkPixmap pm;
++        if (sk_img->peekPixels(&pm) && pm.width() > 0 && pm.height() > 0) {
++          base::span<uint8_t> pixels(
++              static_cast<uint8_t*>(pm.writable_addr()),
++              static_cast<size_t>(pm.width() * pm.height() * 4));
++          NoiseToken token(ChameleonNoise::GetSeed());
++          NoiseHash hash(token);
++          hash.Update(static_cast<uint64_t>(ChameleonNoise::kSubsystemCanvas));
++          NoisePixels(hash, pixels, pm.width(), pm.height());
++          image_bitmap = cpu_image;
++        }
++      }
++    }
++  }
++
+   if (image_bitmap) {
+     auto* options = ImageEncodeOptions::Create();
+     options->setType(ImageEncoderUtils::MimeTypeName(encoding_mime_type));
+diff --git a/third_party/blink/renderer/core/html/canvas/text_metrics.h b/third_party/blink/renderer/core/html/canvas/text_metrics.h
+index 3d2c354897..22b936998a 100644
+--- a/third_party/blink/renderer/core/html/canvas/text_metrics.h
++++ b/third_party/blink/renderer/core/html/canvas/text_metrics.h
+@@ -58,6 +58,7 @@ class CORE_EXPORT TextMetrics final : public ScriptWrappable {
+               PlainTextPainter& text_painter);
+ 
+   double width() const { return width_; }
++  void SetWidth(double w) { width_ = w; }
+   double actualBoundingBoxLeft() const { return actual_bounding_box_left_; }
+   double actualBoundingBoxRight() const { return actual_bounding_box_right_; }
+   double fontBoundingBoxAscent() const { return font_bounding_box_ascent_; }
+diff --git a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+index fbd96302e2..9f992086e9 100644
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+@@ -48,6 +48,10 @@
+ #include "third_party/blink/renderer/core/html/canvas/canvas_font_cache.h"
+ #include "third_party/blink/renderer/core/html/canvas/canvas_performance_monitor.h"
+ #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
++#include "third_party/blink/renderer/core/canvas_interventions/noise_hash.h"
++#include "third_party/blink/renderer/core/canvas_interventions/noise_helper.h"
++#include "third_party/blink/public/common/fingerprinting_protection/noise_token.h"
+ #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context_host.h"
+ #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
+ #include "third_party/blink/renderer/core/html/canvas/image_data.h"
+@@ -525,6 +529,18 @@ ImageData* BaseRenderingContext2D::getImageDataInternal(
+     }
+   }
+ 
++  // Chameleon: Apply deterministic noise to canvas pixel data.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemCanvas) && sw > 0 && sh > 0) {
++    SkPixmap pm = image_data->GetSkPixmap();
++    base::span<uint8_t> pixels(
++        static_cast<uint8_t*>(pm.writable_addr()),
++        static_cast<size_t>(sw * sh * 4));
++    NoiseToken token(ChameleonNoise::GetSeed());
++    NoiseHash hash(token);
++    hash.Update(static_cast<uint64_t>(ChameleonNoise::kSubsystemCanvas));
++    NoisePixels(hash, pixels, sw, sh);
++  }
++
+   return image_data;
+ }
+ 
+@@ -1165,9 +1181,18 @@ TextMetrics* BaseRenderingContext2D::measureText(const String& text) {
+   TextDirection direction =
+       ToTextDirection(state.GetDirection(), host, computed_style);
+ 
+-  return MakeGarbageCollected<TextMetrics>(
++  TextMetrics* metrics = MakeGarbageCollected<TextMetrics>(
+       font, direction, state.GetTextBaseline(), state.GetTextAlign(), text,
+       host->GetPlainTextPainter());
++
++  // Chameleon: Apply tiny noise to measureText width for font fingerprinting.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemFonts)) {
++    double scale = 1.0 + (ChameleonNoise::GetNoiseValue(
++        ChameleonNoise::kSubsystemFonts) - 0.5) * 0.00001;
++    metrics->SetWidth(metrics->width() * scale);
++  }
++
++  return metrics;
+ }
+ 
+ String BaseRenderingContext2D::lang() const {
+diff --git a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
+index c5ba331bd4..a201387307 100644
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
+@@ -50,6 +50,7 @@
+ #include "build/buildflag.h"
+ #include "services/metrics/public/cpp/ukm_builders.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-blink.h"
+ #include "third_party/blink/public/platform/platform.h"
+ #include "third_party/blink/public/platform/task_type.h"
+@@ -2344,6 +2345,16 @@ void RTCPeerConnection::DidGenerateICECandidate(
+   DCHECK(!closed_);
+   DCHECK(GetExecutionContext()->IsContextThread());
+   DCHECK(platform_candidate);
++
++  // Chameleon: Filter out non-relay ICE candidates to prevent IP leaks.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebRTC)) {
++    String candidate_type = platform_candidate->Type();
++    if (candidate_type == "host" || candidate_type == "srflx" ||
++        candidate_type == "prflx") {
++      return;
++    }
++  }
++
+   RTCIceCandidate* ice_candidate = RTCIceCandidate::Create(platform_candidate);
+   MaybeDispatchEvent(RTCPeerConnectionIceEvent::Create(ice_candidate));
+ }
+diff --git a/third_party/blink/renderer/modules/webaudio/audio_buffer.cc b/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
+index 7084a5303e..99bafacd43 100644
+--- a/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
++++ b/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
+@@ -39,6 +39,7 @@
+ #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
+ #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+ #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ 
+ namespace blink {
+ 
+@@ -217,6 +218,28 @@ NotShared<DOMFloat32Array> AudioBuffer::getChannelData(unsigned channel_index) {
+     return NotShared<DOMFloat32Array>(nullptr);
+   }
+ 
++  // Chameleon: Apply deterministic tiny noise to audio channel data.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemAudio)) {
++    DOMFloat32Array* channel = channels_[channel_index].Get();
++    if (channel) {
++      base::span<float> samples = channel->AsSpan();
++      uint64_t seed = ChameleonNoise::GetSeed();
++      uint64_t hash = seed ^ 0xcbf29ce484222325ULL;
++      hash ^= static_cast<uint64_t>(ChameleonNoise::kSubsystemAudio);
++      hash *= 0x00000100000001b3ULL;
++      hash ^= static_cast<uint64_t>(channel_index);
++      hash *= 0x00000100000001b3ULL;
++      double audio_noise = (ChameleonNoise::GetNoiseValue(
++          ChameleonNoise::kSubsystemAudio) - 0.5) * 0.05;
++      for (size_t i = 0; i < samples.size(); i += 50) {
++        uint64_t sample_hash = hash ^ static_cast<uint64_t>(i);
++        sample_hash *= 0x00000100000001b3ULL;
++        double r = static_cast<double>(sample_hash & 0xFFFF) / 65535.0 - 0.5;
++        samples[i] += static_cast<float>(audio_noise * r);
++      }
++    }
++  }
++
+   return NotShared<DOMFloat32Array>(channels_[channel_index].Get());
+ }
+ 
+diff --git a/third_party/blink/renderer/modules/webaudio/offline_audio_context.cc b/third_party/blink/renderer/modules/webaudio/offline_audio_context.cc
+index 626582e39b..c5bf847e3d 100644
+--- a/third_party/blink/renderer/modules/webaudio/offline_audio_context.cc
++++ b/third_party/blink/renderer/modules/webaudio/offline_audio_context.cc
+@@ -26,6 +26,7 @@
+ #include "third_party/blink/renderer/modules/webaudio/offline_audio_context.h"
+ 
+ #include "base/metrics/histogram_functions.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ #include "base/metrics/histogram_macros.h"
+ #include "media/base/audio_glitch_info.h"
+ #include "third_party/blink/public/platform/platform.h"
+@@ -419,6 +420,29 @@ void OfflineAudioContext::FireCompletionEvent() {
+       return;
+     }
+ 
++    // Chameleon: Apply noise to offline rendered audio buffer.
++    if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemAudio)) {
++      double audio_noise = (ChameleonNoise::GetNoiseValue(
++          ChameleonNoise::kSubsystemAudio) - 0.5) * 0.05;
++      uint64_t seed = ChameleonNoise::GetSeed();
++      for (unsigned ch = 0; ch < rendered_buffer->numberOfChannels(); ch++) {
++        NotShared<DOMFloat32Array> channel_data =
++            rendered_buffer->getChannelData(ch);
++        if (channel_data) {
++          base::span<float> samples = channel_data->AsSpan();
++          uint64_t hash = seed ^ 0xcbf29ce484222325ULL;
++          hash ^= static_cast<uint64_t>(ch + 1);
++          hash *= 0x00000100000001b3ULL;
++          for (size_t i = 0; i < samples.size(); i++) {
++            uint64_t sh = hash ^ static_cast<uint64_t>(i);
++            sh *= 0x00000100000001b3ULL;
++            double r = static_cast<double>(sh & 0xFFFF) / 65535.0 - 0.5;
++            samples[i] += static_cast<float>(audio_noise * r);
++          }
++        }
++      }
++    }
++
+     // Call the offline rendering completion event listener and resolve the
+     // promise too.
+     DispatchEvent(*OfflineAudioCompletionEvent::Create(rendered_buffer));
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+index 5b76f5991d..4a6021a6f5 100644
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -79,6 +79,7 @@
+ #include "third_party/blink/renderer/core/paint/cull_rect_updater.h"
+ #include "third_party/blink/renderer/core/paint/paint_layer_painter.h"
+ #include "third_party/blink/renderer/core/probe/core_probes.h"
++#include "third_party/blink/renderer/core/chameleon/chameleon_noise.h"
+ #include "third_party/blink/renderer/core/svg/graphics/svg_image.h"
+ #include "third_party/blink/renderer/core/typed_arrays/array_buffer/array_buffer_contents.h"
+ #include "third_party/blink/renderer/core/typed_arrays/array_buffer_view_helpers.h"
+@@ -3835,22 +3836,70 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+     case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS:
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_CUBE_MAP_TEXTURE_SIZE:
++      if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGLParams)) {
++        GLint v = 0; ContextGL()->GetIntegerv(pname, &v);
++        int r = ChameleonNoise::GetNoiseInt(ChameleonNoise::kSubsystemWebGLParams + 1, 2);
++        v = std::max(4096, v >> r);
++        return WebGLAny(script_state, v);
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_FRAGMENT_UNIFORM_VECTORS:
++      if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGLParams)) {
++        GLint v = 0; ContextGL()->GetIntegerv(pname, &v);
++        v -= ChameleonNoise::GetNoiseInt(ChameleonNoise::kSubsystemWebGLParams + 2, 32);
++        return WebGLAny(script_state, std::max(256, v));
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_RENDERBUFFER_SIZE:
++      if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGLParams)) {
++        GLint v = 0; ContextGL()->GetIntegerv(pname, &v);
++        int r = ChameleonNoise::GetNoiseInt(ChameleonNoise::kSubsystemWebGLParams + 3, 2);
++        v = std::max(4096, v >> r);
++        return WebGLAny(script_state, v);
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_TEXTURE_IMAGE_UNITS:
++      if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGLParams)) {
++        GLint v = 0; ContextGL()->GetIntegerv(pname, &v);
++        v -= ChameleonNoise::GetNoiseInt(ChameleonNoise::kSubsystemWebGLParams + 4, 4);
++        return WebGLAny(script_state, std::max(8, v));
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_TEXTURE_SIZE:
++      if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGLParams)) {
++        GLint v = 0; ContextGL()->GetIntegerv(pname, &v);
++        int r = ChameleonNoise::GetNoiseInt(ChameleonNoise::kSubsystemWebGLParams + 5, 2);
++        v = std::max(4096, v >> r);
++        return WebGLAny(script_state, v);
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_VARYING_VECTORS:
++      if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGLParams)) {
++        GLint v = 0; ContextGL()->GetIntegerv(pname, &v);
++        v -= ChameleonNoise::GetNoiseInt(ChameleonNoise::kSubsystemWebGLParams + 6, 4);
++        return WebGLAny(script_state, std::max(8, v));
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_VERTEX_ATTRIBS:
++      if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGLParams)) {
++        GLint v = 0; ContextGL()->GetIntegerv(pname, &v);
++        v -= ChameleonNoise::GetNoiseInt(ChameleonNoise::kSubsystemWebGLParams + 7, 4);
++        return WebGLAny(script_state, std::max(8, v));
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS:
++      if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGLParams)) {
++        GLint v = 0; ContextGL()->GetIntegerv(pname, &v);
++        v -= ChameleonNoise::GetNoiseInt(ChameleonNoise::kSubsystemWebGLParams + 8, 4);
++        return WebGLAny(script_state, std::max(0, v));
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_VERTEX_UNIFORM_VECTORS:
++      if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGLParams)) {
++        GLint v = 0; ContextGL()->GetIntegerv(pname, &v);
++        v -= ChameleonNoise::GetNoiseInt(ChameleonNoise::kSubsystemWebGLParams + 9, 32);
++        return WebGLAny(script_state, std::max(256, v));
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_VIEWPORT_DIMS:
+       return GetWebGLIntArrayParameter(script_state, pname);
+@@ -3963,8 +4012,13 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
++        // Chameleon: Replace GPU renderer with profile-consistent value.
++        if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGLRenderer)) {
++          return WebGLAny(script_state,
++              String(ChameleonGetGpuRenderer()));
++        }
+         return WebGLAny(script_state,
+-                        String(ContextGL()->GetString(GL_RENDERER)));
++            String(ContextGL()->GetString(GL_RENDERER)));
+       }
+       SynthesizeGLError(
+           GL_INVALID_ENUM, "getParameter",
+@@ -3972,8 +4026,13 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
++        // Chameleon: Replace GPU vendor with profile-consistent value.
++        if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGLRenderer)) {
++          return WebGLAny(script_state,
++              String(ChameleonGetGpuVendor()));
++        }
+         return WebGLAny(script_state,
+-                        String(ContextGL()->GetString(GL_VENDOR)));
++            String(ContextGL()->GetString(GL_VENDOR)));
+       }
+       SynthesizeGLError(
+           GL_INVALID_ENUM, "getParameter",
+@@ -4296,6 +4355,18 @@ WebGLRenderingContextBase::getSupportedExtensions() {
+     }
+   }
+ 
++  // Chameleon: shuffle extension order to prevent fingerprinting.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGLParams) &&
++      result.size() > 1) {
++    for (size_t i = result.size() - 1; i > 0; --i) {
++      size_t j = static_cast<size_t>(
++          ChameleonNoise::GetNoiseInt(
++              ChameleonNoise::kSubsystemWebGLParams + 50 + i,
++              static_cast<int>(i + 1)));
++      std::swap(result[i], result[j]);
++    }
++  }
++
+   return result;
+ }
+ 
+@@ -5119,6 +5190,24 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
+     }
+     ContextGL()->ReadPixels(x, y, width, height, format, type, data);
+   }
++
++  // Chameleon: Apply deterministic noise to WebGL readPixels data.
++  if (ChameleonNoise::IsModuleEnabled(ChameleonNoise::kSubsystemWebGL) && width > 0 && height > 0 &&
++      format == GL_RGBA && type == GL_UNSIGNED_BYTE) {
++    uint64_t seed = ChameleonNoise::GetSeed();
++    size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
++    for (size_t i = 0; i < pixel_count * 4; i += 4) {
++      uint64_t hash = seed ^ (0xcbf29ce484222325ULL);
++      hash ^= static_cast<uint64_t>(i / 4);
++      hash *= 0x00000100000001b3ULL;
++      for (int c = 0; c < 3; ++c) {
++        int val = data[i + c];
++        int noise = static_cast<int>((hash >> (c * 8)) & 0x7) - 3;
++        val = std::max(0, std::min(255, val + noise));
++        data[i + c] = static_cast<uint8_t>(val);
++      }
++    }
++  }
+ }
+ 
+ void WebGLRenderingContextBase::RenderbufferStorageImpl(
+diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_party/blink/renderer/platform/fonts/font_cache.cc
+index 7344fa93eb..931e952b1b 100644
+--- a/third_party/blink/renderer/platform/fonts/font_cache.cc
++++ b/third_party/blink/renderer/platform/fonts/font_cache.cc
+@@ -32,6 +32,7 @@
+ #include <limits>
+ #include <memory>
+ 
++#include "base/command_line.h"
+ #include "base/debug/alias.h"
+ #include "base/feature_list.h"
+ #include "base/notreached.h"
+@@ -76,6 +77,131 @@ namespace blink {
+ const char kColorEmojiLocale[] = "und-Zsye";
+ const char kMonoEmojiLocale[] = "und-Zsym";
+ 
++namespace {
++
++// Chameleon font fingerprinting protection.
++// Uses CommandLine directly because platform/ cannot depend on core/.
++constexpr uint64_t kFnvOffset = 0xcbf29ce484222325ULL;
++constexpr uint64_t kFnvPrime = 0x00000100000001b3ULL;
++
++uint64_t ChameleonFontHash(uint64_t seed, const std::string& font_name) {
++  uint64_t hash = seed ^ kFnvOffset;
++  for (char c : font_name) {
++    hash ^= static_cast<uint64_t>(c);
++    hash *= kFnvPrime;
++  }
++  return hash;
++}
++
++// Fonts that should never be blocked (cross-platform web-safe).
++bool IsSafeFont(const AtomicString& family) {
++  static const char* kSafeFonts[] = {
++    "Arial", "Helvetica", "Times New Roman", "Times",
++    "Courier New", "Courier", "Verdana", "Georgia",
++    "Tahoma", "Trebuchet MS", "Impact", "Comic Sans MS",
++    "Roboto", "system-ui",
++    "serif", "sans-serif", "monospace", "cursive", "fantasy",
++    "-webkit-standard", "-webkit-serif", "-webkit-sans-serif",
++    "-webkit-monospace",
++  };
++  std::string name = family.Utf8();
++  for (const char* safe : kSafeFonts) {
++    if (name == safe) return true;
++  }
++  return false;
++}
++
++// Windows-only fonts that should be blocked on Mac/Linux profiles.
++bool IsWindowsOnlyFont(const std::string& name) {
++  static const char* kWinFonts[] = {
++    "Segoe UI", "Segoe UI Light", "Segoe UI Semibold",
++    "Calibri", "Cambria", "Cambria Math", "Consolas",
++    "Constantia", "Corbel", "Microsoft Sans Serif",
++    "Palatino Linotype", "MS Gothic", "MS PGothic",
++    "MS Sans Serif", "MS Serif", "Wingdings", "Wingdings 2",
++    "Wingdings 3", "Webdings", "Symbol", "Sylfaen",
++    "Franklin Gothic Medium", "Lucida Console",
++  };
++  for (const char* f : kWinFonts) {
++    if (name == f) return true;
++  }
++  return false;
++}
++
++// Determine OS type from seed (must match navigator_base.cc profile selection).
++// Profile indices: 0-12 = Windows, 13-19 = Mac, 20-23 = Linux
++int GetProfileOsType(uint64_t seed) {
++  // Replicate ChameleonNoise::GetNoiseInt(kSubsystemNavigator + 300, 24)
++  uint64_t hash = seed ^ kFnvOffset;
++  uint64_t val = static_cast<uint64_t>(12 + 300);  // kSubsystemNavigator + 300
++  for (int i = 0; i < 8; ++i) {
++    hash ^= (val >> (i * 8)) & 0xFF;
++    hash *= kFnvPrime;
++  }
++  double noise = static_cast<double>(hash) / static_cast<double>(UINT64_MAX);
++  int idx = static_cast<int>(noise * 24) % 24;
++  if (idx < 13) return 0;  // Windows
++  if (idx < 20) return 1;  // Mac
++  return 2;                 // Linux
++}
++
++bool g_chameleon_font_init = false;
++bool g_chameleon_font_enabled = false;
++uint64_t g_chameleon_font_seed = 0;
++int g_chameleon_os_type = 0;  // 0=Win, 1=Mac, 2=Linux
++
++void EnsureChameleonFontInit() {
++  if (g_chameleon_font_init) return;
++  g_chameleon_font_init = true;
++  if (!base::CommandLine::InitializedForCurrentProcess()) return;
++  const base::CommandLine* cl = base::CommandLine::ForCurrentProcess();
++  if (!cl->HasSwitch("chameleon-seed")) return;
++  std::string seed_hex = cl->GetSwitchValueASCII("chameleon-seed");
++  if (seed_hex.empty()) return;
++
++  // Check if fonts module is enabled.
++  if (cl->HasSwitch("chameleon-modules")) {
++    std::string mods = cl->GetSwitchValueASCII("chameleon-modules");
++    if (mods == "none") return;
++    if (mods != "all" && !mods.empty() &&
++        mods.find("fonts") == std::string::npos) return;
++  }
++
++  g_chameleon_font_seed = 0;
++  for (size_t i = 0; i < seed_hex.size() && i < 16; ++i) {
++    char c = seed_hex[i];
++    uint64_t nibble = 0;
++    if (c >= '0' && c <= '9') nibble = c - '0';
++    else if (c >= 'a' && c <= 'f') nibble = c - 'a' + 10;
++    else if (c >= 'A' && c <= 'F') nibble = c - 'A' + 10;
++    g_chameleon_font_seed = (g_chameleon_font_seed << 4) | nibble;
++  }
++  g_chameleon_font_enabled = (g_chameleon_font_seed != 0);
++  if (g_chameleon_font_enabled) {
++    g_chameleon_os_type = GetProfileOsType(g_chameleon_font_seed);
++  }
++}
++
++// Returns true if this font should be hidden from fingerprinting.
++bool ShouldBlockFont(const AtomicString& family) {
++  EnsureChameleonFontInit();
++  if (!g_chameleon_font_enabled) return false;
++  if (IsSafeFont(family)) return false;
++
++  std::string name = family.Utf8();
++
++  // Block Windows-only fonts when profile says Mac or Linux.
++  if (g_chameleon_os_type != 0 && IsWindowsOnlyFont(name)) {
++    return true;
++  }
++
++  // Hash the font name with seed; block ~30% of remaining non-safe fonts.
++  uint64_t h = ChameleonFontHash(g_chameleon_font_seed, name);
++  return (h % 100) < 30;
++}
++
++}  // namespace
++
+ #if BUILDFLAG(IS_ANDROID)
+ extern const char kNotoColorEmojiCompat[] = "Noto Color Emoji Compat";
+ #endif
+@@ -134,6 +260,13 @@ const FontPlatformData* FontCache::GetFontPlatformData(
+     PlatformInit();
+   }
+ 
++  // Chameleon: block certain non-safe fonts to prevent font enumeration
++  // fingerprinting. Returns nullptr (font not found) for blocked fonts.
++  if (creation_params.CreationType() == kCreateFontByFamily &&
++      ShouldBlockFont(creation_params.Family())) {
++    return nullptr;
++  }
++
+ #if !BUILDFLAG(IS_MAC)
+   if (creation_params.CreationType() == kCreateFontByFamily &&
+       creation_params.Family() == font_family_names::kSystemUi) {
+-- 
+2.53.0.windows.2
+
