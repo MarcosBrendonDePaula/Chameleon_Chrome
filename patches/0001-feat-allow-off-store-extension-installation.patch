@@ -1,7 +1,7 @@
 From 091a575d89fbab71a7af76a2a2fad57cb07cb28b Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Mon, 23 Mar 2026 07:47:00 -0300
-Subject: [PATCH 1/5] feat: allow off-store extension installation
+Subject: [PATCH 1/6] feat: allow off-store extension installation
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

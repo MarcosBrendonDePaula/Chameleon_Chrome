@@ -1,0 +1,230 @@
+From 752c13efc11d9fae8924aacf45922d3a1a337bfe Mon Sep 17 00:00:00 2001
+From: Marcos <marcosbrendonaz@gmail.com>
+Date: Thu, 26 Mar 2026 18:30:43 -0300
+Subject: [PATCH 6/6] feat: anti-webdriver detection - hide automation from all
+ detection methods
+
+- navigator.webdriver always returns false (navigator.cc)
+- ChromeDriver $cdc_ variables replaced with random names (devtools_client_impl.cc)
+- CDP setAutomationOverride silently ignored (inspector_emulation_agent.cc)
+- "Chrome is being controlled" infobar disabled (infobar_utils.cc)
+- --enable-automation flag not propagated to renderer (render_process_host_impl.cc)
+
+Selenium/Playwright/Puppeteer automation is now completely invisible.
+Tested: dual Selenium profiles with different fingerprints simultaneously.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ chrome/browser/ui/startup/infobar_utils.cc    |  4 +-
+ .../chrome/devtools_client_impl.cc            | 17 ++--
+ .../renderer_host/render_process_host_impl.cc |  4 +-
+ test_dual_selenium.py                         | 98 +++++++++++++++++++
+ .../blink/renderer/core/frame/navigator.cc    | 10 +-
+ .../inspector/inspector_emulation_agent.cc    |  5 +-
+ 6 files changed, 119 insertions(+), 19 deletions(-)
+ create mode 100644 test_dual_selenium.py
+
+diff --git a/chrome/browser/ui/startup/infobar_utils.cc b/chrome/browser/ui/startup/infobar_utils.cc
+index 505e8669ed..2d264cef82 100644
+--- a/chrome/browser/ui/startup/infobar_utils.cc
++++ b/chrome/browser/ui/startup/infobar_utils.cc
+@@ -83,8 +83,8 @@ bool ShouldShowBadFlagsSecurityWarnings() {
+ // This is a separate function to avoid accidentally reading the switch from
+ // `startup_command_line`.
+ bool IsAutomationEnabled() {
+-  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+-      switches::kEnableAutomation);
++  // Chameleon: Always return false to hide automation infobar.
++  return false;
+ }
+ 
+ // This is a separate function to avoid accidentally reading the switch from
+diff --git a/chrome/test/chromedriver/chrome/devtools_client_impl.cc b/chrome/test/chromedriver/chrome/devtools_client_impl.cc
+index 64dfc3decf..0b9bf46ed3 100644
+--- a/chrome/test/chromedriver/chrome/devtools_client_impl.cc
++++ b/chrome/test/chromedriver/chrome/devtools_client_impl.cc
+@@ -583,15 +583,18 @@ Status DevToolsClientImpl::SetUpDevTools() {
+ 
+     // This is a page or frame level DevToolsClient
+     base::DictValue params;
++    // Chameleon: Use non-detectable variable names instead of cdc_ prefix.
++    // Original cdc_ variables are easily detected by anti-bot scripts.
+     std::string script =
+         "(function () {"
+-        "window.cdc_adoQpoasnfa76pfcZLmcfl_Array = window.Array;"
+-        "window.cdc_adoQpoasnfa76pfcZLmcfl_Object = window.Object;"
+-        "window.cdc_adoQpoasnfa76pfcZLmcfl_Promise = window.Promise;"
+-        "window.cdc_adoQpoasnfa76pfcZLmcfl_Proxy = window.Proxy;"
+-        "window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol = window.Symbol;"
+-        "window.cdc_adoQpoasnfa76pfcZLmcfl_JSON = window.JSON;"
+-        "window.cdc_adoQpoasnfa76pfcZLmcfl_Window = window.Window;"
++        "var _c = '_' + Math.random().toString(36).substr(2);"
++        "window[_c + '_Array'] = window.Array;"
++        "window[_c + '_Object'] = window.Object;"
++        "window[_c + '_Promise'] = window.Promise;"
++        "window[_c + '_Proxy'] = window.Proxy;"
++        "window[_c + '_Symbol'] = window.Symbol;"
++        "window[_c + '_JSON'] = window.JSON;"
++        "window[_c + '_Window'] = window.Window;"
+         "}) ();";
+     params.Set("source", script);
+     Status status = SendCommandAndIgnoreResponse(
+diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
+index 5bbca33e00..cadd10ab4a 100644
+--- a/content/browser/renderer_host/render_process_host_impl.cc
++++ b/content/browser/renderer_host/render_process_host_impl.cc
+@@ -3712,7 +3712,9 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
+       switches::kDisableV8IdleTasks,
+       switches::kDisableVideoCaptureUseGpuMemoryBuffer,
+       switches::kDomAutomationController,
+-      switches::kEnableAutomation,
++      // Chameleon: Don't propagate --enable-automation to renderer.
++      // This prevents navigator.webdriver from being set to true.
++      // switches::kEnableAutomation,
+       switches::kEnableExperimentalAccessibilityLanguageDetection,
+       switches::kEnableExperimentalAccessibilityLabelsDebugging,
+       switches::kEnableExperimentalWebPlatformFeatures,
+diff --git a/test_dual_selenium.py b/test_dual_selenium.py
+new file mode 100644
+index 0000000000..460d956271
+--- /dev/null
++++ b/test_dual_selenium.py
+@@ -0,0 +1,98 @@
++from selenium import webdriver
++from selenium.webdriver.chrome.options import Options
++from selenium.webdriver.chrome.service import Service
++import time
++import random
++import threading
++
++def log(msg):
++    print(msg, flush=True)
++
++def run_profile(name, seed, proxy, port):
++    log(f"[{name}] Starting... seed={seed[:16]}... port={port}")
++    profile_dir = f"E:\\chameleon_profiles\\{name}"
++
++    options = Options()
++    options.binary_location = "E:\\CHAMALEON\\out\\Default\\chrome.exe"
++    options.add_argument(f"--user-data-dir={profile_dir}")
++    options.add_argument(f"--chameleon-seed={seed}")
++    options.add_argument("--chameleon-locale=pt-BR,pt")
++    if proxy:
++        options.add_argument(f"--proxy-server=http://{proxy}")
++
++    service = Service("E:\\CHAMALEON\\out\\Default\\chromedriver.exe", port=port)
++    driver = webdriver.Chrome(service=service, options=options)
++
++    # Checks
++    driver.get("about:blank")
++    time.sleep(1)
++    info = driver.execute_script("""
++        var c=document.createElement('canvas');var g=c.getContext('webgl');
++        var d=g.getExtension('WEBGL_debug_renderer_info');
++        return {
++            webdriver: navigator.webdriver,
++            cores: navigator.hardwareConcurrency,
++            mem: navigator.deviceMemory,
++            gpu: d ? g.getParameter(d.UNMASKED_RENDERER_WEBGL).slice(0,50) : 'N/A'
++        };
++    """)
++    log(f"[{name}] webdriver={info['webdriver']} cores={info['cores']} mem={info['mem']}")
++    log(f"[{name}] GPU: {info['gpu']}")
++
++    # Fingerprint
++    log(f"[{name}] Loading fingerprint.com...")
++    driver.get("https://fingerprint.com")
++    time.sleep(20)
++
++    try:
++        result = driver.execute_script("""
++            var text = document.body.innerText;
++            var idMatch = text.match(/visitor ID[\\s\\n]*([a-zA-Z0-9]+)/);
++            var scoreMatch = text.match(/Suspect Score[\\s\\n]*(\\d+)/);
++            return {
++                visitorId: idMatch ? idMatch[1] : 'not found',
++                score: scoreMatch ? scoreMatch[1] : 'not found'
++            };
++        """)
++        log(f"[{name}] Visitor ID: {result['visitorId']}")
++        log(f"[{name}] Score: {result['score']}")
++    except Exception as e:
++        log(f"[{name}] Error: {e}")
++
++    return driver
++
++seed1 = ''.join(random.choices('0123456789abcdef', k=32))
++seed2 = ''.join(random.choices('0123456789abcdef', k=32))
++
++log("=== DUAL SELENIUM TEST ===")
++
++results = {}
++
++def start_profile(name, seed, port):
++    results[name] = run_profile(name, seed, "2.56.249.17:50100", port)
++
++t1 = threading.Thread(target=start_profile, args=("perfil_A", seed1, 9515))
++t2 = threading.Thread(target=start_profile, args=("perfil_B", seed2, 9516))
++
++t1.start()
++time.sleep(5)
++t2.start()
++
++t1.join()
++t2.join()
++
++log("\n=== BOTH BROWSERS OPEN ===")
++log("Ctrl+C to close both.")
++
++try:
++    while True:
++        time.sleep(60)
++except KeyboardInterrupt:
++    pass
++
++for name, d in results.items():
++    try:
++        d.quit()
++    except:
++        pass
++log("Done!")
+diff --git a/third_party/blink/renderer/core/frame/navigator.cc b/third_party/blink/renderer/core/frame/navigator.cc
+index c857367df8..ecba94942c 100644
+--- a/third_party/blink/renderer/core/frame/navigator.cc
++++ b/third_party/blink/renderer/core/frame/navigator.cc
+@@ -101,12 +101,10 @@ bool Navigator::cookieEnabled() const {
+ }
+ 
+ bool Navigator::webdriver() const {
+-  if (RuntimeEnabledFeatures::AutomationControlledEnabled())
+-    return true;
+-
+-  bool automation_enabled = false;
+-  probe::ApplyAutomationOverride(GetExecutionContext(), automation_enabled);
+-  return automation_enabled;
++  // Chameleon: Always return false to hide automation.
++  // This makes browser automation (Selenium, Playwright, Puppeteer)
++  // undetectable via navigator.webdriver.
++  return false;
+ }
+ 
+ String Navigator::GetAcceptLanguages() {
+diff --git a/third_party/blink/renderer/core/inspector/inspector_emulation_agent.cc b/third_party/blink/renderer/core/inspector/inspector_emulation_agent.cc
+index 47a229290d..f9477af446 100644
+--- a/third_party/blink/renderer/core/inspector/inspector_emulation_agent.cc
++++ b/third_party/blink/renderer/core/inspector/inspector_emulation_agent.cc
+@@ -1049,9 +1049,8 @@ protocol::Response InspectorEmulationAgent::setDisabledImageTypes(
+ 
+ protocol::Response InspectorEmulationAgent::setAutomationOverride(
+     bool enabled) {
+-  if (enabled)
+-    InnerEnable();
+-  automation_override_.Set(enabled);
++  // Chameleon: Ignore automation override to hide webdriver presence.
++  // The CDP command succeeds but doesn't actually set the flag.
+   return protocol::Response::Success();
+ }
+ 
+-- 
+2.53.0.windows.2
+
