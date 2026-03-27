@@ -1,7 +1,7 @@
 From 5255af549d4df55dc3439f2fafc2163332168824 Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Thu, 26 Mar 2026 17:30:57 -0300
-Subject: [PATCH 04/15] feat: complete anti-fingerprinting system with 14
+Subject: [PATCH 04/17] feat: complete anti-fingerprinting system with 14
  modules
 
 Chameleon Browser anti-fingerprinting system implemented natively in C++.
@@ -82,7 +82,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 diff --git a/CLAUDE.md b/CLAUDE.md
 new file mode 100644
-index 0000000000..7a9419f32e
+index 0000000000000..7a9419f32e6c9
 --- /dev/null
 +++ b/CLAUDE.md
 @@ -0,0 +1,119 @@
@@ -206,7 +206,7 @@ index 0000000000..7a9419f32e
 +- `Intl.DateTimeFormat` timezone spoofing (requires V8 changes)
 +- These are lower priority since timezone is already exposed by the user's IP/proxy.
 diff --git a/build_chameleon.bat b/build_chameleon.bat
-index 6ea6da87cc..6ca387634a 100644
+index 6ea6da87ccb64..6ca387634a2fa 100644
 --- a/build_chameleon.bat
 +++ b/build_chameleon.bat
 @@ -8,9 +8,32 @@ echo.
@@ -247,7 +247,7 @@ index 6ea6da87cc..6ca387634a 100644
      echo ERRO: Build falhou!
 diff --git a/build_night.bat b/build_night.bat
 new file mode 100644
-index 0000000000..4ee41b9e53
+index 0000000000000..4ee41b9e53637
 --- /dev/null
 +++ b/build_night.bat
 @@ -0,0 +1,20 @@
@@ -272,7 +272,7 @@ index 0000000000..4ee41b9e53
 +echo.
 +echo Build finalizado: %date% %time%
 diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
-index e21982287a..5bbca33e00 100644
+index e21982287a855..5bbca33e002fe 100644
 --- a/content/browser/renderer_host/render_process_host_impl.cc
 +++ b/content/browser/renderer_host/render_process_host_impl.cc
 @@ -3804,6 +3804,11 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
@@ -288,7 +288,7 @@ index e21982287a..5bbca33e00 100644
        // should also be added to
        // chrome/browser/ash/login/chrome_restart_request.cc.
 diff --git a/content/renderer/renderer_main.cc b/content/renderer/renderer_main.cc
-index 9dbe18fe20..43601e416d 100644
+index 9dbe18fe20217..43601e416df70 100644
 --- a/content/renderer/renderer_main.cc
 +++ b/content/renderer/renderer_main.cc
 @@ -14,6 +14,10 @@
@@ -348,7 +348,7 @@ index 9dbe18fe20..43601e416d 100644
    // As the Zygote process starts up earlier than the browser process, it gets
    // its own locale (at login time for Chrome OS). So we have to set the ICU
 diff --git a/gin/v8_initializer.cc b/gin/v8_initializer.cc
-index 6146bd47bf..ee287ec15d 100644
+index 6146bd47bf320..ee287ec15d333 100644
 --- a/gin/v8_initializer.cc
 +++ b/gin/v8_initializer.cc
 @@ -13,6 +13,8 @@
@@ -362,7 +362,7 @@ index 6146bd47bf..ee287ec15d 100644
  #include "base/bits.h"
 diff --git a/kill_build.bat b/kill_build.bat
 new file mode 100644
-index 0000000000..bf006e155f
+index 0000000000000..bf006e155f360
 --- /dev/null
 +++ b/kill_build.bat
 @@ -0,0 +1,13 @@
@@ -381,7 +381,7 @@ index 0000000000..bf006e155f
 +echo Build interrompido com sucesso.
 diff --git a/leak_check.js b/leak_check.js
 new file mode 100644
-index 0000000000..194facce6b
+index 0000000000000..194facce6b149
 --- /dev/null
 +++ b/leak_check.js
 @@ -0,0 +1,130 @@
@@ -517,7 +517,7 @@ index 0000000000..194facce6b
 +})();
 diff --git a/night_build.cjs b/night_build.cjs
 new file mode 100644
-index 0000000000..049e33b9fa
+index 0000000000000..049e33b9fab7a
 --- /dev/null
 +++ b/night_build.cjs
 @@ -0,0 +1,106 @@
@@ -628,7 +628,7 @@ index 0000000000..049e33b9fa
 +check();
 +setInterval(check, CHECK_INTERVAL);
 diff --git a/run_chameleon.bat b/run_chameleon.bat
-index 122ef8fb36..084d62685e 100644
+index 122ef8fb3601c..084d62685e84f 100644
 --- a/run_chameleon.bat
 +++ b/run_chameleon.bat
 @@ -1,9 +1,153 @@
@@ -790,7 +790,7 @@ index 122ef8fb36..084d62685e 100644
 +    %MODULES_FLAG% ^
 +    %JS_FLAGS%
 diff --git a/third_party/blink/common/switches.cc b/third_party/blink/common/switches.cc
-index 8c41e20019..3281b5625e 100644
+index 8c41e200198bf..3281b5625ea35 100644
 --- a/third_party/blink/common/switches.cc
 +++ b/third_party/blink/common/switches.cc
 @@ -184,5 +184,20 @@ const char kDisableReduceAcceptLanguage[] = "disable-reduce-accept-language";
@@ -815,7 +815,7 @@ index 8c41e20019..3281b5625e 100644
  }  // namespace switches
  }  // namespace blink
 diff --git a/third_party/blink/public/common/switches.h b/third_party/blink/public/common/switches.h
-index bca7d37b86..90ad6e3e2d 100644
+index bca7d37b861ac..90ad6e3e2db62 100644
 --- a/third_party/blink/public/common/switches.h
 +++ b/third_party/blink/public/common/switches.h
 @@ -65,6 +65,15 @@ BLINK_COMMON_EXPORT extern const char kDisableStandardizedBrowserZoom[];
@@ -835,7 +835,7 @@ index bca7d37b86..90ad6e3e2d 100644
  }  // namespace blink
  
 diff --git a/third_party/blink/renderer/controller/blink_initializer.cc b/third_party/blink/renderer/controller/blink_initializer.cc
-index 4d1f2acf58..fd06c656e5 100644
+index 4d1f2acf58e43..fd06c656e52ef 100644
 --- a/third_party/blink/renderer/controller/blink_initializer.cc
 +++ b/third_party/blink/renderer/controller/blink_initializer.cc
 @@ -35,6 +35,9 @@
@@ -896,7 +896,7 @@ index 4d1f2acf58..fd06c656e5 100644
        blink::V8ContextSnapshot::GetReferenceTable(),
        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
 diff --git a/third_party/blink/renderer/core/BUILD.gn b/third_party/blink/renderer/core/BUILD.gn
-index ec5134061d..ea9c497afb 100644
+index ec5134061d694..ea9c497afbeba 100644
 --- a/third_party/blink/renderer/core/BUILD.gn
 +++ b/third_party/blink/renderer/core/BUILD.gn
 @@ -23,6 +23,7 @@ import("//third_party/blink/renderer/core/animation/build.gni")
@@ -925,7 +925,7 @@ index ec5134061d..ea9c497afb 100644
        rebase_path(blink_core_tests_content_capture, "", "content_capture")
 diff --git a/third_party/blink/renderer/core/chameleon/build.gni b/third_party/blink/renderer/core/chameleon/build.gni
 new file mode 100644
-index 0000000000..b51297f761
+index 0000000000000..b51297f761cb7
 --- /dev/null
 +++ b/third_party/blink/renderer/core/chameleon/build.gni
 @@ -0,0 +1,10 @@
@@ -941,7 +941,7 @@ index 0000000000..b51297f761
 +blink_core_tests_chameleon = []
 diff --git a/third_party/blink/renderer/core/chameleon/chameleon_noise.cc b/third_party/blink/renderer/core/chameleon/chameleon_noise.cc
 new file mode 100644
-index 0000000000..fb309b20db
+index 0000000000000..fb309b20dba2b
 --- /dev/null
 +++ b/third_party/blink/renderer/core/chameleon/chameleon_noise.cc
 @@ -0,0 +1,149 @@
@@ -1096,7 +1096,7 @@ index 0000000000..fb309b20db
 +}  // namespace blink
 diff --git a/third_party/blink/renderer/core/chameleon/chameleon_noise.h b/third_party/blink/renderer/core/chameleon/chameleon_noise.h
 new file mode 100644
-index 0000000000..7b8d768624
+index 0000000000000..7b8d768624923
 --- /dev/null
 +++ b/third_party/blink/renderer/core/chameleon/chameleon_noise.h
 @@ -0,0 +1,77 @@
@@ -1178,7 +1178,7 @@ index 0000000000..7b8d768624
 +
 +#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_CHAMELEON_CHAMELEON_NOISE_H_
 diff --git a/third_party/blink/renderer/core/dom/element.cc b/third_party/blink/renderer/core/dom/element.cc
-index c7bff7fa9c..179dcc20d0 100644
+index c7bff7fa9c3cd..179dcc20d0eda 100644
 --- a/third_party/blink/renderer/core/dom/element.cc
 +++ b/third_party/blink/renderer/core/dom/element.cc
 @@ -26,6 +26,7 @@
@@ -1230,7 +1230,7 @@ index c7bff7fa9c..179dcc20d0 100644
  }
  
 diff --git a/third_party/blink/renderer/core/events/navigator_events.cc b/third_party/blink/renderer/core/events/navigator_events.cc
-index a57561775c..b45e0b67b7 100644
+index a57561775c119..b45e0b67b77c8 100644
 --- a/third_party/blink/renderer/core/events/navigator_events.cc
 +++ b/third_party/blink/renderer/core/events/navigator_events.cc
 @@ -34,10 +34,13 @@
@@ -1248,7 +1248,7 @@ index a57561775c..b45e0b67b7 100644
    return window ? window->GetFrame()->GetSettings()->GetMaxTouchPoints() : 0;
  }
 diff --git a/third_party/blink/renderer/core/execution_context/navigator_base.cc b/third_party/blink/renderer/core/execution_context/navigator_base.cc
-index cccfafe8f9..4cb069954d 100644
+index cccfafe8f93a0..4cb069954da2f 100644
 --- a/third_party/blink/renderer/core/execution_context/navigator_base.cc
 +++ b/third_party/blink/renderer/core/execution_context/navigator_base.cc
 @@ -4,9 +4,11 @@
@@ -1478,7 +1478,7 @@ index cccfafe8f9..4cb069954d 100644
    // We need to check the ReduceUserAgentMinorVersion feature flag for
    // Android WebView, which does not currently ship a reduced User-Agent.
 diff --git a/third_party/blink/renderer/core/frame/local_dom_window.cc b/third_party/blink/renderer/core/frame/local_dom_window.cc
-index 87856b74d5..0bdeceac25 100644
+index 87856b74d5e0a..0bdeceac25e20 100644
 --- a/third_party/blink/renderer/core/frame/local_dom_window.cc
 +++ b/third_party/blink/renderer/core/frame/local_dom_window.cc
 @@ -25,6 +25,7 @@
@@ -1506,7 +1506,7 @@ index 87856b74d5..0bdeceac25 100644
  
  int LocalDOMWindow::outerWidth() const {
 diff --git a/third_party/blink/renderer/core/frame/navigator.cc b/third_party/blink/renderer/core/frame/navigator.cc
-index 583f05f8dd..c857367df8 100644
+index 583f05f8dd5fb..c857367df8776 100644
 --- a/third_party/blink/renderer/core/frame/navigator.cc
 +++ b/third_party/blink/renderer/core/frame/navigator.cc
 @@ -33,6 +33,7 @@
@@ -1527,7 +1527,7 @@ index 583f05f8dd..c857367df8 100644
    // the platform with a frozen platform to distinguish between
    // mobile and desktop when ReduceUserAgent is enabled.
 diff --git a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
-index f5c0db2d1b..ee26861cf4 100644
+index f5c0db2d1b58d..ee26861cf4e39 100644
 --- a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
 @@ -5,11 +5,16 @@
@@ -1549,7 +1549,7 @@ index f5c0db2d1b..ee26861cf4 100644
  
  }  // namespace blink
 diff --git a/third_party/blink/renderer/core/frame/navigator_device_memory.cc b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
-index 05fa33e456..f6e218965b 100644
+index 05fa33e4568e8..f6e218965b822 100644
 --- a/third_party/blink/renderer/core/frame/navigator_device_memory.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
 @@ -8,10 +8,15 @@
@@ -1569,7 +1569,7 @@ index 05fa33e456..f6e218965b 100644
  }
  
 diff --git a/third_party/blink/renderer/core/frame/navigator_language.cc b/third_party/blink/renderer/core/frame/navigator_language.cc
-index 75cd346131..cf8311f028 100644
+index 75cd3461317b7..cf8311f028561 100644
 --- a/third_party/blink/renderer/core/frame/navigator_language.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_language.cc
 @@ -11,6 +11,7 @@
@@ -1602,7 +1602,7 @@ index 75cd346131..cf8311f028 100644
    probe::ApplyAcceptLanguageOverride(execution_context_,
                                       &accept_languages_override);
 diff --git a/third_party/blink/renderer/core/frame/navigator_ua_data.cc b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
-index 772f670609..ba8bdca652 100644
+index 772f670609adf..ba8bdca652261 100644
 --- a/third_party/blink/renderer/core/frame/navigator_ua_data.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
 @@ -13,9 +13,63 @@
@@ -1691,7 +1691,7 @@ index 772f670609..ba8bdca652 100644
  }
  
 diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink/renderer/core/frame/screen.cc
-index 69ffc2b05f..92943863d9 100644
+index 69ffc2b05f75d..92943863d990b 100644
 --- a/third_party/blink/renderer/core/frame/screen.cc
 +++ b/third_party/blink/renderer/core/frame/screen.cc
 @@ -37,6 +37,7 @@
@@ -1731,7 +1731,7 @@ index 69ffc2b05f..92943863d9 100644
  
  int Screen::availWidth() const {
 diff --git a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc b/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
-index 6b580c9292..c25db59244 100644
+index 6b580c9292012..c25db59244dd7 100644
 --- a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
 +++ b/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
 @@ -123,6 +123,10 @@
@@ -1797,7 +1797,7 @@ index 6b580c9292..c25db59244 100644
      auto* options = ImageEncodeOptions::Create();
      options->setType(ImageEncoderUtils::MimeTypeName(encoding_mime_type));
 diff --git a/third_party/blink/renderer/core/html/canvas/text_metrics.h b/third_party/blink/renderer/core/html/canvas/text_metrics.h
-index 3d2c354897..22b936998a 100644
+index 3d2c354897fad..22b936998ae96 100644
 --- a/third_party/blink/renderer/core/html/canvas/text_metrics.h
 +++ b/third_party/blink/renderer/core/html/canvas/text_metrics.h
 @@ -58,6 +58,7 @@ class CORE_EXPORT TextMetrics final : public ScriptWrappable {
@@ -1809,7 +1809,7 @@ index 3d2c354897..22b936998a 100644
    double actualBoundingBoxRight() const { return actual_bounding_box_right_; }
    double fontBoundingBoxAscent() const { return font_bounding_box_ascent_; }
 diff --git a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
-index fbd96302e2..9f992086e9 100644
+index fbd96302e2cda..9f992086e913a 100644
 --- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
 +++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
 @@ -48,6 +48,10 @@
@@ -1863,7 +1863,7 @@ index fbd96302e2..9f992086e9 100644
  
  String BaseRenderingContext2D::lang() const {
 diff --git a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
-index c5ba331bd4..a201387307 100644
+index c5ba331bd4691..a2013873072f7 100644
 --- a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
 +++ b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
 @@ -50,6 +50,7 @@
@@ -1892,7 +1892,7 @@ index c5ba331bd4..a201387307 100644
    MaybeDispatchEvent(RTCPeerConnectionIceEvent::Create(ice_candidate));
  }
 diff --git a/third_party/blink/renderer/modules/webaudio/audio_buffer.cc b/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
-index 7084a5303e..99bafacd43 100644
+index 7084a5303edc0..99bafacd43f12 100644
 --- a/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
 +++ b/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
 @@ -39,6 +39,7 @@
@@ -1933,7 +1933,7 @@ index 7084a5303e..99bafacd43 100644
  }
  
 diff --git a/third_party/blink/renderer/modules/webaudio/offline_audio_context.cc b/third_party/blink/renderer/modules/webaudio/offline_audio_context.cc
-index 626582e39b..c5bf847e3d 100644
+index 626582e39b7df..c5bf847e3d36d 100644
 --- a/third_party/blink/renderer/modules/webaudio/offline_audio_context.cc
 +++ b/third_party/blink/renderer/modules/webaudio/offline_audio_context.cc
 @@ -26,6 +26,7 @@
@@ -1975,7 +1975,7 @@ index 626582e39b..c5bf847e3d 100644
      // promise too.
      DispatchEvent(*OfflineAudioCompletionEvent::Create(rendered_buffer));
 diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
-index 5b76f5991d..4a6021a6f5 100644
+index 5b76f5991df75..4a6021a6f5d84 100644
 --- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 +++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 @@ -79,6 +79,7 @@
@@ -2132,7 +2132,7 @@ index 5b76f5991d..4a6021a6f5 100644
  
  void WebGLRenderingContextBase::RenderbufferStorageImpl(
 diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_party/blink/renderer/platform/fonts/font_cache.cc
-index 7344fa93eb..931e952b1b 100644
+index 7344fa93eb881..931e952b1b05c 100644
 --- a/third_party/blink/renderer/platform/fonts/font_cache.cc
 +++ b/third_party/blink/renderer/platform/fonts/font_cache.cc
 @@ -32,6 +32,7 @@

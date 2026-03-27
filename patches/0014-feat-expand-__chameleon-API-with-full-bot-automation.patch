@@ -1,7 +1,7 @@
 From 456c3e13982c13e92cbaa4d6ca9b963b65013c5a Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Fri, 27 Mar 2026 02:49:59 -0300
-Subject: [PATCH 14/15] feat: expand __chameleon API with full bot automation
+Subject: [PATCH 14/17] feat: expand __chameleon API with full bot automation
  toolkit
 
 14 functions available in isolated worlds:
@@ -33,7 +33,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
  2 files changed, 476 insertions(+), 73 deletions(-)
 
 diff --git a/third_party/blink/renderer/core/chameleon/chameleon_binding.cc b/third_party/blink/renderer/core/chameleon/chameleon_binding.cc
-index 2536848ea5..b6309ebe0e 100644
+index 2536848ea51e1..b6309ebe0e1de 100644
 --- a/third_party/blink/renderer/core/chameleon/chameleon_binding.cc
 +++ b/third_party/blink/renderer/core/chameleon/chameleon_binding.cc
 @@ -7,25 +7,34 @@
@@ -637,7 +637,7 @@ index 2536848ea5..b6309ebe0e 100644
  
  }  // namespace blink
 diff --git a/third_party/blink/renderer/core/chameleon/chameleon_binding.h b/third_party/blink/renderer/core/chameleon/chameleon_binding.h
-index 3cb39ef69c..19f3ffc35d 100644
+index 3cb39ef69c192..19f3ffc35d4bc 100644
 --- a/third_party/blink/renderer/core/chameleon/chameleon_binding.h
 +++ b/third_party/blink/renderer/core/chameleon/chameleon_binding.h
 @@ -6,8 +6,11 @@

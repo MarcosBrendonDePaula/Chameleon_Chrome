@@ -1,7 +1,7 @@
 From 8fbc05211c576504e6a6b1df8c946bb9d05f39c9 Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Mon, 23 Mar 2026 08:10:50 -0300
-Subject: [PATCH 03/15] feat: add build and run scripts for Chameleon
+Subject: [PATCH 03/17] feat: add build and run scripts for Chameleon
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -21,7 +21,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 diff --git a/build_chameleon.bat b/build_chameleon.bat
 new file mode 100644
-index 0000000000..6ea6da87cc
+index 0000000000000..6ea6da87ccb64
 --- /dev/null
 +++ b/build_chameleon.bat
 @@ -0,0 +1,26 @@
@@ -53,7 +53,7 @@ index 0000000000..6ea6da87cc
 +pause
 diff --git a/run_chameleon.bat b/run_chameleon.bat
 new file mode 100644
-index 0000000000..122ef8fb36
+index 0000000000000..122ef8fb3601c
 --- /dev/null
 +++ b/run_chameleon.bat
 @@ -0,0 +1,9 @@

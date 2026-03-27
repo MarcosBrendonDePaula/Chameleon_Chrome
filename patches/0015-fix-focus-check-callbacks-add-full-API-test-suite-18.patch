@@ -1,7 +1,7 @@
 From b99b2f899bccd78510cb018a35ddc19c47c6d8c4 Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Fri, 27 Mar 2026 02:58:29 -0300
-Subject: [PATCH 15/15] fix: focus/check callbacks + add full API test suite
+Subject: [PATCH 15/17] fix: focus/check callbacks + add full API test suite
  (18/18 pass)
 
 - focus: dispatch focus + focusin events for proper listener firing
@@ -23,7 +23,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
  create mode 100644 tests/e2e/test_chameleon_api.py
 
 diff --git a/tests/e2e/conftest.py b/tests/e2e/conftest.py
-index fc2266215d..92388916e4 100644
+index fc2266215d1c7..92388916e4534 100644
 --- a/tests/e2e/conftest.py
 +++ b/tests/e2e/conftest.py
 @@ -81,5 +81,9 @@ def pierce_exec(driver, script, frame_id=None):
@@ -39,7 +39,7 @@ index fc2266215d..92388916e4 100644
      return result['result'].get('value')
 diff --git a/tests/e2e/fixtures/chameleon_api_test.html b/tests/e2e/fixtures/chameleon_api_test.html
 new file mode 100644
-index 0000000000..ffaf60f490
+index 0000000000000..ffaf60f4907ba
 --- /dev/null
 +++ b/tests/e2e/fixtures/chameleon_api_test.html
 @@ -0,0 +1,105 @@
@@ -645,7 +645,7 @@ HcmV?d00001
 
 diff --git a/tests/e2e/test_chameleon_api.py b/tests/e2e/test_chameleon_api.py
 new file mode 100644
-index 0000000000..eea0c32162
+index 0000000000000..eea0c32162c08
 --- /dev/null
 +++ b/tests/e2e/test_chameleon_api.py
 @@ -0,0 +1,230 @@
@@ -880,7 +880,7 @@ index 0000000000..eea0c32162
 +    ok = test_api()
 +    sys.exit(0 if ok else 1)
 diff --git a/third_party/blink/renderer/core/chameleon/chameleon_binding.cc b/third_party/blink/renderer/core/chameleon/chameleon_binding.cc
-index b6309ebe0e..d29851be27 100644
+index b6309ebe0e1de..d29851be27bcb 100644
 --- a/third_party/blink/renderer/core/chameleon/chameleon_binding.cc
 +++ b/third_party/blink/renderer/core/chameleon/chameleon_binding.cc
 @@ -205,6 +205,8 @@ void ChameleonBinding::FocusCallback(

@@ -1,7 +1,7 @@
 From f6f76b3d8eb73927dc12639dbe28188d8436ad75 Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Fri, 27 Mar 2026 02:33:31 -0300
-Subject: [PATCH 13/15] docs: move CHAMELEON_README.md to README.md
+Subject: [PATCH 13/17] docs: move CHAMELEON_README.md to README.md
 
 Replace default Chromium README with Chameleon documentation
 so it displays on GitHub landing page.
@@ -15,7 +15,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 diff --git a/CHAMELEON_README.md b/CHAMELEON_README.md
 deleted file mode 100644
-index 1887c836e6..0000000000
+index 1887c836e67bd..0000000000000
 --- a/CHAMELEON_README.md
 +++ /dev/null
 @@ -1,354 +0,0 @@
@@ -374,7 +374,7 @@ index 1887c836e6..0000000000
 -| `switches.h/.cc` | `--chameleon-seed`, `--chameleon-pierce`, etc. |
 -| `render_process_host_impl.cc` | Propagates chameleon flags to all renderer processes. |
 diff --git a/README.md b/README.md
-index 590f4c94f2..1887c836e6 100644
+index 590f4c94f2067..1887c836e67bd 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,21 +1,354 @@

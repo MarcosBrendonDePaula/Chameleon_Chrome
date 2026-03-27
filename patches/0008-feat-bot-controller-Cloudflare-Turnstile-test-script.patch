@@ -1,7 +1,7 @@
 From 8b38fa6186b1acf25d0d1f88bf7cf5edc9ef8975 Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Thu, 26 Mar 2026 21:05:00 -0300
-Subject: [PATCH 08/15] feat: bot controller + Cloudflare/Turnstile test
+Subject: [PATCH 08/17] feat: bot controller + Cloudflare/Turnstile test
  scripts
 
 - bot_controller.py: interactive bot control via JSON command file
@@ -29,7 +29,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 diff --git a/bot_controller.py b/bot_controller.py
 new file mode 100644
-index 0000000000..bbd8e4219d
+index 0000000000000..bbd8e4219d6af
 --- /dev/null
 +++ b/bot_controller.py
 @@ -0,0 +1,214 @@
@@ -249,7 +249,7 @@ index 0000000000..bbd8e4219d
 +log("Bot closed.")
 diff --git a/test_cloudflare.py b/test_cloudflare.py
 new file mode 100644
-index 0000000000..dbd29dc746
+index 0000000000000..dbd29dc746d7b
 --- /dev/null
 +++ b/test_cloudflare.py
 @@ -0,0 +1,122 @@
@@ -377,7 +377,7 @@ index 0000000000..dbd29dc746
 +driver.quit()
 diff --git a/test_cloudflare2.py b/test_cloudflare2.py
 new file mode 100644
-index 0000000000..0c72064ce1
+index 0000000000000..0c72064ce148e
 --- /dev/null
 +++ b/test_cloudflare2.py
 @@ -0,0 +1,94 @@
@@ -477,7 +477,7 @@ index 0000000000..0c72064ce1
 +driver.quit()
 diff --git a/test_final.py b/test_final.py
 new file mode 100644
-index 0000000000..7879eec418
+index 0000000000000..7879eec4183d1
 --- /dev/null
 +++ b/test_final.py
 @@ -0,0 +1,115 @@
@@ -598,7 +598,7 @@ index 0000000000..7879eec418
 +driver.quit()
 diff --git a/test_turnstile_click.py b/test_turnstile_click.py
 new file mode 100644
-index 0000000000..abebfd045e
+index 0000000000000..abebfd045e892
 --- /dev/null
 +++ b/test_turnstile_click.py
 @@ -0,0 +1,97 @@
@@ -701,7 +701,7 @@ index 0000000000..abebfd045e
 +driver.quit()
 diff --git a/test_turnstile_token.py b/test_turnstile_token.py
 new file mode 100644
-index 0000000000..a07c069afa
+index 0000000000000..a07c069afaddd
 --- /dev/null
 +++ b/test_turnstile_token.py
 @@ -0,0 +1,88 @@

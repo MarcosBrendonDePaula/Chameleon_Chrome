@@ -1,7 +1,7 @@
 From a571725dc2d30fab992307d232eab2e159c70b7a Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Fri, 27 Mar 2026 02:31:37 -0300
-Subject: [PATCH 12/15] feat: __chameleon API - trusted C++ click/query in
+Subject: [PATCH 12/17] feat: __chameleon API - trusted C++ click/query in
  isolated worlds
 
 Add ChameleonBinding that injects __chameleon object into CDP isolated
@@ -41,7 +41,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
  create mode 100644 third_party/blink/renderer/core/chameleon/chameleon_binding.h
 
 diff --git a/CHAMELEON_README.md b/CHAMELEON_README.md
-index 1208ce57ad..1887c836e6 100644
+index 1208ce57ad95c..1887c836e67bd 100644
 --- a/CHAMELEON_README.md
 +++ b/CHAMELEON_README.md
 @@ -25,7 +25,7 @@ out\Default\chrome.exe --user-data-dir="E:\chameleon_profiles\myprofile" --chame
@@ -378,7 +378,7 @@ index 1208ce57ad..1887c836e6 100644
 +| `render_process_host_impl.cc` | Propagates chameleon flags to all renderer processes. |
 diff --git a/tests/e2e/multi_bot.py b/tests/e2e/multi_bot.py
 new file mode 100644
-index 0000000000..d429ca6ab2
+index 0000000000000..d429ca6ab2fc4
 --- /dev/null
 +++ b/tests/e2e/multi_bot.py
 @@ -0,0 +1,253 @@
@@ -4543,7 +4543,7 @@ HcmV?d00001
 
 diff --git a/tests/e2e/test_trusted_click.py b/tests/e2e/test_trusted_click.py
 new file mode 100644
-index 0000000000..917d8f66b2
+index 0000000000000..917d8f66b2aaf
 --- /dev/null
 +++ b/tests/e2e/test_trusted_click.py
 @@ -0,0 +1,188 @@
@@ -4736,7 +4736,7 @@ index 0000000000..917d8f66b2
 +    ok = test()
 +    sys.exit(0 if ok else 1)
 diff --git a/third_party/blink/renderer/bindings/core/v8/local_window_proxy.cc b/third_party/blink/renderer/bindings/core/v8/local_window_proxy.cc
-index d293c49e67..5ca55b7cf4 100644
+index d293c49e6774d..5ca55b7cf43e3 100644
 --- a/third_party/blink/renderer/bindings/core/v8/local_window_proxy.cc
 +++ b/third_party/blink/renderer/bindings/core/v8/local_window_proxy.cc
 @@ -33,6 +33,7 @@
@@ -4758,7 +4758,7 @@ index d293c49e67..5ca55b7cf4 100644
  
    if (World().IsMainWorld()) {
 diff --git a/third_party/blink/renderer/core/chameleon/build.gni b/third_party/blink/renderer/core/chameleon/build.gni
-index b51297f761..b10ef92b9c 100644
+index b51297f761cb7..b10ef92b9c83d 100644
 --- a/third_party/blink/renderer/core/chameleon/build.gni
 +++ b/third_party/blink/renderer/core/chameleon/build.gni
 @@ -3,6 +3,8 @@
@@ -4772,7 +4772,7 @@ index b51297f761..b10ef92b9c 100644
  ]
 diff --git a/third_party/blink/renderer/core/chameleon/chameleon_binding.cc b/third_party/blink/renderer/core/chameleon/chameleon_binding.cc
 new file mode 100644
-index 0000000000..2536848ea5
+index 0000000000000..2536848ea51e1
 --- /dev/null
 +++ b/third_party/blink/renderer/core/chameleon/chameleon_binding.cc
 @@ -0,0 +1,190 @@
@@ -4968,7 +4968,7 @@ index 0000000000..2536848ea5
 +}  // namespace blink
 diff --git a/third_party/blink/renderer/core/chameleon/chameleon_binding.h b/third_party/blink/renderer/core/chameleon/chameleon_binding.h
 new file mode 100644
-index 0000000000..3cb39ef69c
+index 0000000000000..3cb39ef69c192
 --- /dev/null
 +++ b/third_party/blink/renderer/core/chameleon/chameleon_binding.h
 @@ -0,0 +1,37 @@

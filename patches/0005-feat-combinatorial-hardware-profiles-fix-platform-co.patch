@@ -1,7 +1,7 @@
 From 7b09fcabfc8fa21b08b422fcd2f45c8927d9c782 Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Thu, 26 Mar 2026 18:05:12 -0300
-Subject: [PATCH 05/15] feat: combinatorial hardware profiles + fix platform
+Subject: [PATCH 05/17] feat: combinatorial hardware profiles + fix platform
  consistency
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -23,7 +23,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
  2 files changed, 105 insertions(+), 175 deletions(-)
 
 diff --git a/third_party/blink/renderer/core/execution_context/navigator_base.cc b/third_party/blink/renderer/core/execution_context/navigator_base.cc
-index 4cb069954d..886e856337 100644
+index 4cb069954da2f..886e856337b38 100644
 --- a/third_party/blink/renderer/core/execution_context/navigator_base.cc
 +++ b/third_party/blink/renderer/core/execution_context/navigator_base.cc
 @@ -48,132 +48,117 @@ String GetReducedNavigatorPlatform() {
@@ -261,7 +261,7 @@ index 4cb069954d..886e856337 100644
  
  }  // namespace
 diff --git a/third_party/blink/renderer/core/frame/navigator_ua_data.cc b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
-index ba8bdca652..232179fc18 100644
+index ba8bdca652261..232179fc18195 100644
 --- a/third_party/blink/renderer/core/frame/navigator_ua_data.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
 @@ -13,63 +13,8 @@
