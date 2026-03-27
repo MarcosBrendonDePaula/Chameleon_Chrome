@@ -352,3 +352,49 @@ Build config: `out/Default/args.gn` — release build with `is_debug=false`, `is
 | `local_window_proxy.cc` | Hook to install `ChameleonBinding` on context creation. |
 | `switches.h/.cc` | `--chameleon-seed`, `--chameleon-pierce`, etc. |
 | `render_process_host_impl.cc` | Propagates chameleon flags to all renderer processes. |
+
+## Setting Up From Source
+
+This repo contains patches on top of upstream Chromium. To set up a development environment:
+
+```bash
+# 1. Clone and sync Chromium source
+# Follow: https://chromium.googlesource.com/chromium/src.git
+fetch chromium
+cd src
+gclient sync
+
+# 2. Apply Chameleon patches
+git am patches/*.patch
+
+# 3. Build
+build_chameleon.bat
+
+# 4. Run
+run_chameleon.bat
+```
+
+### Chromium Base Commit
+
+```
+9760e6c70c Roll Chrome Mac PGO Profile
+```
+
+### Patches
+
+All Chameleon modifications are exported as sequential patches in `patches/`:
+
+| Patch | Description |
+|-------|-------------|
+| `0001` | Allow off-store extension installation |
+| `0002` | Add Chameleon entries to .gitignore |
+| `0003` | Build and run scripts |
+| `0004` | Complete anti-fingerprinting system (14 modules) |
+| `0005` | Combinatorial hardware profiles |
+| `0006` | Anti-webdriver detection |
+| `0007` | Synthetic cookie generator |
+| `0008` | Bot controller + Turnstile test scripts |
+| `0009` | Pierce with isolated world protection |
+| `0010` | README documentation |
+| `0011` | Remove auto-click, bot-controlled CDP |
+| `0012` | `__chameleon` API (trusted click/query) |
