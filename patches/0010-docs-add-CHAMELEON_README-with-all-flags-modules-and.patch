@@ -1,7 +1,7 @@
 From 421bc2d919426820932ea60a55368ea81876e17f Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Fri, 27 Mar 2026 01:47:09 -0300
-Subject: [PATCH 10/14] docs: add CHAMELEON_README with all flags, modules, and
+Subject: [PATCH 10/15] docs: add CHAMELEON_README with all flags, modules, and
  automation guide
 
 - Document all command line flags (seed, locale, modules, brand, pierce)
