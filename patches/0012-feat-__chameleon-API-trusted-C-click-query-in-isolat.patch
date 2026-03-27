@@ -1,7 +1,7 @@
 From a571725dc2d30fab992307d232eab2e159c70b7a Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Fri, 27 Mar 2026 02:31:37 -0300
-Subject: [PATCH 12/12] feat: __chameleon API - trusted C++ click/query in
+Subject: [PATCH 12/13] feat: __chameleon API - trusted C++ click/query in
  isolated worlds
 
 Add ChameleonBinding that injects __chameleon object into CDP isolated

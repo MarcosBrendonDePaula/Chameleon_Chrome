@@ -1,7 +1,7 @@
 From 8b38fa6186b1acf25d0d1f88bf7cf5edc9ef8975 Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Thu, 26 Mar 2026 21:05:00 -0300
-Subject: [PATCH 08/12] feat: bot controller + Cloudflare/Turnstile test
+Subject: [PATCH 08/13] feat: bot controller + Cloudflare/Turnstile test
  scripts
 
 - bot_controller.py: interactive bot control via JSON command file
