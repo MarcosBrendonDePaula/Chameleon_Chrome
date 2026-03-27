@@ -1,0 +1,726 @@
+From 456c3e13982c13e92cbaa4d6ca9b963b65013c5a Mon Sep 17 00:00:00 2001
+From: Marcos <marcosbrendonaz@gmail.com>
+Date: Fri, 27 Mar 2026 02:49:59 -0300
+Subject: [PATCH 14/14] feat: expand __chameleon API with full bot automation
+ toolkit
+
+14 functions available in isolated worlds:
+
+Actions:
+- click(el) - trusted click (kFromUserAgent, isTrusted:true)
+- focus(el) - focus element
+- hover(el) - dispatch mouseenter + mouseover
+- type(el, text) - set value + fire input/change events
+- check(el, bool?) - toggle/set checkbox or radio
+- select(el, value) - select option in dropdown
+- submit(form) - submit form via requestSubmit
+
+Queries (pierce closed shadow DOM):
+- query(selector) - deep querySelector
+- queryAll(selector) - deep querySelectorAll
+
+Read:
+- attr(el, name) - get attribute
+- setAttr(el, name, val) - set attribute
+- text(el) - get textContent
+- html(el) - get innerHTML
+- value(el) - get input/select value
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ .../core/chameleon/chameleon_binding.cc       | 493 +++++++++++++++---
+ .../core/chameleon/chameleon_binding.h        |  56 +-
+ 2 files changed, 476 insertions(+), 73 deletions(-)
+
+diff --git a/third_party/blink/renderer/core/chameleon/chameleon_binding.cc b/third_party/blink/renderer/core/chameleon/chameleon_binding.cc
+index 2536848ea5..b6309ebe0e 100644
+--- a/third_party/blink/renderer/core/chameleon/chameleon_binding.cc
++++ b/third_party/blink/renderer/core/chameleon/chameleon_binding.cc
+@@ -7,25 +7,34 @@
+ #include "base/command_line.h"
+ #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_element.h"
++#include "third_party/blink/renderer/core/dom/document.h"
+ #include "third_party/blink/renderer/core/dom/element.h"
++#include "third_party/blink/renderer/core/dom/events/event.h"
+ #include "third_party/blink/renderer/core/dom/events/simulated_click_options.h"
+ #include "third_party/blink/renderer/core/dom/shadow_root.h"
+ #include "third_party/blink/renderer/core/dom/static_node_list.h"
++#include "third_party/blink/renderer/core/events/keyboard_event.h"
++#include "third_party/blink/renderer/core/events/mouse_event.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
++#include "third_party/blink/renderer/core/html/forms/html_form_element.h"
++#include "third_party/blink/renderer/core/html/forms/html_input_element.h"
++#include "third_party/blink/renderer/core/html/forms/html_select_element.h"
+ #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
+ #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+ #include "third_party/blink/renderer/platform/bindings/script_state.h"
+ #include "third_party/blink/renderer/platform/bindings/v8_binding.h"
++#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
+ #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+ #include "v8/include/v8-context.h"
+ #include "v8/include/v8-function.h"
+ #include "v8/include/v8-isolate.h"
+ #include "v8/include/v8-object.h"
+-#include "v8/include/v8-template.h"
+ #include "v8/include/v8-value.h"
+ 
+ namespace blink {
+ 
++// --- Helpers ---
++
+ // static
+ bool ChameleonBinding::IsPierceEnabled() {
+   static bool checked = false;
+@@ -40,87 +49,309 @@ bool ChameleonBinding::IsPierceEnabled() {
+   return enabled;
+ }
+ 
++// static
++void ChameleonBinding::AddFunction(v8::Isolate* isolate,
++                                    v8::Local<v8::Context> context,
++                                    v8::Local<v8::Object> obj,
++                                    const char* name,
++                                    v8::FunctionCallback callback) {
++  v8::Local<v8::Function> fn;
++  if (v8::Function::New(context, callback).ToLocal(&fn)) {
++    obj->Set(context,
++             v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
++             fn)
++        .Check();
++  }
++}
++
++// static
++Element* ChameleonBinding::UnwrapElement(
++    v8::Isolate* isolate,
++    const v8::FunctionCallbackInfo<v8::Value>& args,
++    int index,
++    const char* fn_name) {
++  if (args.Length() <= index || !args[index]->IsObject()) {
++    std::string msg = std::string(fn_name) + ": argument must be an Element";
++    isolate->ThrowException(v8::Exception::TypeError(
++        v8::String::NewFromUtf8(isolate, msg.c_str()).ToLocalChecked()));
++    return nullptr;
++  }
++  Element* el = V8Element::ToWrappable(isolate, args[index]);
++  if (!el) {
++    std::string msg = std::string(fn_name) + ": argument is not an Element";
++    isolate->ThrowException(v8::Exception::TypeError(
++        v8::String::NewFromUtf8(isolate, msg.c_str()).ToLocalChecked()));
++  }
++  return el;
++}
++
++// static
++Element* ChameleonBinding::DeepQuery(ContainerNode& root,
++                                      const AtomicString& selector) {
++  DummyExceptionStateForTesting exception_state;
++  Element* found = root.querySelector(selector, exception_state);
++  if (found)
++    return found;
++
++  StaticElementList* elements =
++      root.querySelectorAll(AtomicString("*"), exception_state);
++  if (!elements)
++    return nullptr;
++
++  for (unsigned i = 0; i < elements->length(); i++) {
++    Element* el = elements->item(i);
++    ShadowRoot* sr = el->GetShadowRoot();
++    if (!sr)
++      continue;
++    Element* in_shadow = DeepQuery(*sr, selector);
++    if (in_shadow)
++      return in_shadow;
++  }
++  return nullptr;
++}
++
++// static
++void ChameleonBinding::DeepQueryAll(ContainerNode& root,
++                                     const AtomicString& selector,
++                                     HeapVector<Member<Element>>& results) {
++  DummyExceptionStateForTesting exception_state;
++  StaticElementList* found = root.querySelectorAll(selector, exception_state);
++  if (found) {
++    for (unsigned i = 0; i < found->length(); i++)
++      results.push_back(found->item(i));
++  }
++
++  StaticElementList* all =
++      root.querySelectorAll(AtomicString("*"), exception_state);
++  if (!all)
++    return;
++
++  for (unsigned i = 0; i < all->length(); i++) {
++    Element* el = all->item(i);
++    ShadowRoot* sr = el->GetShadowRoot();
++    if (!sr)
++      continue;
++    DeepQueryAll(*sr, selector, results);
++  }
++}
++
++// --- Install ---
++
+ // static
+ void ChameleonBinding::Install(v8::Local<v8::Context> context) {
+   if (!IsPierceEnabled())
+     return;
+ 
+-  // Only install in isolated worlds, never in main world.
+   v8::Isolate* isolate = v8::Isolate::GetCurrent();
+   ScriptState* script_state = ScriptState::From(isolate, context);
+   if (!script_state)
+     return;
+-  const DOMWrapperWorld& world = script_state->World();
+-  if (world.IsMainWorld())
++  if (script_state->World().IsMainWorld())
+     return;
+ 
+   v8::HandleScope handle_scope(isolate);
+   v8::Context::Scope context_scope(context);
+ 
+-  // Create __chameleon object
+-  v8::Local<v8::Object> chameleon_obj = v8::Object::New(isolate);
++  v8::Local<v8::Object> obj = v8::Object::New(isolate);
+ 
+-  // Add click(element) function
+-  v8::Local<v8::Function> click_fn;
+-  if (v8::Function::New(context, ClickCallback).ToLocal(&click_fn)) {
+-    chameleon_obj
+-        ->Set(context,
+-              v8::String::NewFromUtf8Literal(isolate, "click"),
+-              click_fn)
+-        .Check();
+-  }
++  // Actions
++  AddFunction(isolate, context, obj, "click", ClickCallback);
++  AddFunction(isolate, context, obj, "focus", FocusCallback);
++  AddFunction(isolate, context, obj, "hover", HoverCallback);
++  AddFunction(isolate, context, obj, "type", TypeCallback);
++  AddFunction(isolate, context, obj, "check", CheckCallback);
++  AddFunction(isolate, context, obj, "select", SelectCallback);
++  AddFunction(isolate, context, obj, "submit", SubmitCallback);
+ 
+-  // Add query(selector) function
+-  v8::Local<v8::Function> query_fn;
+-  if (v8::Function::New(context, QueryCallback).ToLocal(&query_fn)) {
+-    chameleon_obj
+-        ->Set(context,
+-              v8::String::NewFromUtf8Literal(isolate, "query"),
+-              query_fn)
+-        .Check();
+-  }
++  // Queries
++  AddFunction(isolate, context, obj, "query", QueryCallback);
++  AddFunction(isolate, context, obj, "queryAll", QueryAllCallback);
++
++  // Read
++  AddFunction(isolate, context, obj, "attr", AttrCallback);
++  AddFunction(isolate, context, obj, "setAttr", SetAttrCallback);
++  AddFunction(isolate, context, obj, "text", TextCallback);
++  AddFunction(isolate, context, obj, "html", HtmlCallback);
++  AddFunction(isolate, context, obj, "value", ValueCallback);
+ 
+-  // Set __chameleon on global
+   context->Global()
+       ->Set(context,
+             v8::String::NewFromUtf8Literal(isolate, "__chameleon"),
+-            chameleon_obj)
++            obj)
+       .Check();
+ }
+ 
++// --- Action Callbacks ---
++
++// __chameleon.click(element) - trusted click
+ // static
+ void ChameleonBinding::ClickCallback(
+     const v8::FunctionCallbackInfo<v8::Value>& args) {
+   v8::Isolate* isolate = args.GetIsolate();
++  Element* el = UnwrapElement(isolate, args, 0, "__chameleon.click");
++  if (!el)
++    return;
++  el->DispatchSimulatedClick(nullptr,
++                              SimulatedClickCreationScope::kFromUserAgent);
++  args.GetReturnValue().Set(v8::Boolean::New(isolate, true));
++}
++
++// __chameleon.focus(element) - focus element
++// static
++void ChameleonBinding::FocusCallback(
++    const v8::FunctionCallbackInfo<v8::Value>& args) {
++  v8::Isolate* isolate = args.GetIsolate();
++  Element* el = UnwrapElement(isolate, args, 0, "__chameleon.focus");
++  if (!el)
++    return;
++  el->Focus();
++  args.GetReturnValue().Set(v8::Boolean::New(isolate, true));
++}
++
++// __chameleon.hover(element) - dispatch mouseenter + mouseover
++// static
++void ChameleonBinding::HoverCallback(
++    const v8::FunctionCallbackInfo<v8::Value>& args) {
++  v8::Isolate* isolate = args.GetIsolate();
++  Element* el = UnwrapElement(isolate, args, 0, "__chameleon.hover");
++  if (!el)
++    return;
++
++  el->DispatchEvent(*Event::Create(event_type_names::kMouseenter));
++  el->DispatchEvent(*Event::Create(event_type_names::kMouseover));
++  args.GetReturnValue().Set(v8::Boolean::New(isolate, true));
++}
+ 
+-  if (args.Length() < 1 || !args[0]->IsObject()) {
++// __chameleon.type(element, text) - set value + fire input/change
++// static
++void ChameleonBinding::TypeCallback(
++    const v8::FunctionCallbackInfo<v8::Value>& args) {
++  v8::Isolate* isolate = args.GetIsolate();
++  Element* el = UnwrapElement(isolate, args, 0, "__chameleon.type");
++  if (!el)
++    return;
++
++  if (args.Length() < 2 || !args[1]->IsString()) {
+     isolate->ThrowException(v8::Exception::TypeError(
+         v8::String::NewFromUtf8Literal(isolate,
+-                                        "__chameleon.click: argument must be an Element")));
++            "__chameleon.type: second argument must be a string")));
+     return;
+   }
+ 
+-  // Convert V8 object to Blink Element
+-  ScriptState* script_state =
+-      ScriptState::ForCurrentRealm(args);
+-  if (!script_state)
++  v8::String::Utf8Value text(isolate, args[1]);
++  if (!*text)
+     return;
+ 
+-  Element* element = V8Element::ToWrappable(isolate, args[0]);
+-  if (!element) {
++  // Try as HTMLInputElement
++  auto* input = DynamicTo<HTMLInputElement>(el);
++  if (input) {
++    el->Focus();
++    input->SetValueForUser(String(*text));
++    input->DispatchEvent(*Event::Create(event_type_names::kInput));
++    input->DispatchEvent(*Event::Create(event_type_names::kChange));
++    args.GetReturnValue().Set(v8::Boolean::New(isolate, true));
++    return;
++  }
++
++  // Fallback: set via attribute + events
++  el->Focus();
++  el->setAttribute(html_names::kValueAttr, AtomicString(*text));
++  el->DispatchEvent(*Event::Create(event_type_names::kInput));
++  el->DispatchEvent(*Event::Create(event_type_names::kChange));
++  args.GetReturnValue().Set(v8::Boolean::New(isolate, true));
++}
++
++// __chameleon.check(element, checked?) - toggle or set checkbox/radio
++// static
++void ChameleonBinding::CheckCallback(
++    const v8::FunctionCallbackInfo<v8::Value>& args) {
++  v8::Isolate* isolate = args.GetIsolate();
++  Element* el = UnwrapElement(isolate, args, 0, "__chameleon.check");
++  if (!el)
++    return;
++
++  auto* input = DynamicTo<HTMLInputElement>(el);
++  if (!input) {
+     isolate->ThrowException(v8::Exception::TypeError(
+         v8::String::NewFromUtf8Literal(isolate,
+-                                        "__chameleon.click: argument is not an Element")));
++            "__chameleon.check: element must be an input")));
+     return;
+   }
+ 
+-  // Dispatch trusted click
+-  element->DispatchSimulatedClick(
+-      nullptr, SimulatedClickCreationScope::kFromUserAgent);
++  bool new_state;
++  if (args.Length() >= 2 && args[1]->IsBoolean()) {
++    new_state = args[1].As<v8::Boolean>()->Value();
++  } else {
++    // Toggle
++    new_state = !input->Checked();
++  }
+ 
++  input->SetChecked(new_state);
++  input->DispatchEvent(*Event::Create(event_type_names::kInput));
++  input->DispatchEvent(*Event::Create(event_type_names::kChange));
++
++  // Also do a trusted click for proper event chain
++  el->DispatchSimulatedClick(nullptr,
++                              SimulatedClickCreationScope::kFromUserAgent);
++
++  args.GetReturnValue().Set(v8::Boolean::New(isolate, new_state));
++}
++
++// __chameleon.select(element, value) - select option by value
++// static
++void ChameleonBinding::SelectCallback(
++    const v8::FunctionCallbackInfo<v8::Value>& args) {
++  v8::Isolate* isolate = args.GetIsolate();
++  Element* el = UnwrapElement(isolate, args, 0, "__chameleon.select");
++  if (!el)
++    return;
++
++  if (args.Length() < 2 || !args[1]->IsString()) {
++    isolate->ThrowException(v8::Exception::TypeError(
++        v8::String::NewFromUtf8Literal(isolate,
++            "__chameleon.select: second argument must be a string")));
++    return;
++  }
++
++  auto* select = DynamicTo<HTMLSelectElement>(el);
++  if (!select) {
++    isolate->ThrowException(v8::Exception::TypeError(
++        v8::String::NewFromUtf8Literal(isolate,
++            "__chameleon.select: element must be a <select>")));
++    return;
++  }
++
++  v8::String::Utf8Value val(isolate, args[1]);
++  select->setValueForBinding(AtomicString(*val));
++  select->DispatchEvent(*Event::Create(event_type_names::kInput));
++  select->DispatchEvent(*Event::Create(event_type_names::kChange));
+   args.GetReturnValue().Set(v8::Boolean::New(isolate, true));
+ }
+ 
++// __chameleon.submit(form) - submit form
++// static
++void ChameleonBinding::SubmitCallback(
++    const v8::FunctionCallbackInfo<v8::Value>& args) {
++  v8::Isolate* isolate = args.GetIsolate();
++  Element* el = UnwrapElement(isolate, args, 0, "__chameleon.submit");
++  if (!el)
++    return;
++
++  auto* form = DynamicTo<HTMLFormElement>(el);
++  if (!form) {
++    isolate->ThrowException(v8::Exception::TypeError(
++        v8::String::NewFromUtf8Literal(isolate,
++            "__chameleon.submit: element must be a <form>")));
++    return;
++  }
++
++  form->requestSubmit(nullptr, ASSERT_NO_EXCEPTION);
++  args.GetReturnValue().Set(v8::Boolean::New(isolate, true));
++}
++
++// --- Query Callbacks ---
++
++// __chameleon.query(selector) - deep query single
+ // static
+ void ChameleonBinding::QueryCallback(
+     const v8::FunctionCallbackInfo<v8::Value>& args) {
+@@ -129,7 +360,7 @@ void ChameleonBinding::QueryCallback(
+   if (args.Length() < 1 || !args[0]->IsString()) {
+     isolate->ThrowException(v8::Exception::TypeError(
+         v8::String::NewFromUtf8Literal(isolate,
+-                                        "__chameleon.query: argument must be a CSS selector string")));
++            "__chameleon.query: argument must be a CSS selector")));
+     return;
+   }
+ 
+@@ -137,22 +368,15 @@ void ChameleonBinding::QueryCallback(
+   if (!*selector_utf8)
+     return;
+ 
+-  AtomicString selector(*selector_utf8);
+-
+-  ScriptState* script_state =
+-      ScriptState::ForCurrentRealm(args);
++  ScriptState* script_state = ScriptState::ForCurrentRealm(args);
+   if (!script_state)
+     return;
+ 
+-  // Get the document from the current context
+   LocalDOMWindow* window = LocalDOMWindow::From(script_state);
+   if (!window || !window->document())
+     return;
+ 
+-  Document* document = window->document();
+-
+-  // Deep query: search through closed shadow roots
+-  Element* found = DeepQuery(*document, selector);
++  Element* found = DeepQuery(*window->document(), AtomicString(*selector_utf8));
+ 
+   if (found) {
+     args.GetReturnValue().Set(
+@@ -162,29 +386,162 @@ void ChameleonBinding::QueryCallback(
+   }
+ }
+ 
+-// static - not in header, internal helper
+-Element* ChameleonBinding::DeepQuery(ContainerNode& root,
+-                                      const AtomicString& selector) {
+-  DummyExceptionStateForTesting exception_state;
+-  Element* found = root.querySelector(selector, exception_state);
+-  if (found)
+-    return found;
++// __chameleon.queryAll(selector) - deep query all
++// static
++void ChameleonBinding::QueryAllCallback(
++    const v8::FunctionCallbackInfo<v8::Value>& args) {
++  v8::Isolate* isolate = args.GetIsolate();
+ 
+-  StaticElementList* elements =
+-      root.querySelectorAll(AtomicString("*"), exception_state);
+-  if (!elements)
+-    return nullptr;
++  if (args.Length() < 1 || !args[0]->IsString()) {
++    isolate->ThrowException(v8::Exception::TypeError(
++        v8::String::NewFromUtf8Literal(isolate,
++            "__chameleon.queryAll: argument must be a CSS selector")));
++    return;
++  }
+ 
+-  for (unsigned i = 0; i < elements->length(); i++) {
+-    Element* el = elements->item(i);
+-    ShadowRoot* sr = el->GetShadowRoot();
+-    if (!sr)
+-      continue;
+-    Element* in_shadow = DeepQuery(*sr, selector);
+-    if (in_shadow)
+-      return in_shadow;
++  v8::String::Utf8Value selector_utf8(isolate, args[0]);
++  if (!*selector_utf8)
++    return;
++
++  ScriptState* script_state = ScriptState::ForCurrentRealm(args);
++  if (!script_state)
++    return;
++
++  LocalDOMWindow* window = LocalDOMWindow::From(script_state);
++  if (!window || !window->document())
++    return;
++
++  HeapVector<Member<Element>> results;
++  DeepQueryAll(*window->document(), AtomicString(*selector_utf8), results);
++
++  v8::Local<v8::Context> context = isolate->GetCurrentContext();
++  v8::Local<v8::Array> array = v8::Array::New(isolate, results.size());
++  for (unsigned i = 0; i < results.size(); i++) {
++    array
++        ->Set(context, i,
++              ToV8Traits<Element>::ToV8(script_state, results[i].Get()))
++        .Check();
++  }
++  args.GetReturnValue().Set(array);
++}
++
++// --- Read Callbacks ---
++
++// __chameleon.attr(element, name) - get attribute
++// static
++void ChameleonBinding::AttrCallback(
++    const v8::FunctionCallbackInfo<v8::Value>& args) {
++  v8::Isolate* isolate = args.GetIsolate();
++  Element* el = UnwrapElement(isolate, args, 0, "__chameleon.attr");
++  if (!el)
++    return;
++
++  if (args.Length() < 2 || !args[1]->IsString()) {
++    isolate->ThrowException(v8::Exception::TypeError(
++        v8::String::NewFromUtf8Literal(isolate,
++            "__chameleon.attr: second argument must be attribute name")));
++    return;
++  }
++
++  v8::String::Utf8Value name(isolate, args[1]);
++  String value = el->getAttribute(AtomicString(*name));
++  if (value.IsNull()) {
++    args.GetReturnValue().SetNull();
++  } else {
++    args.GetReturnValue().Set(
++        v8::String::NewFromUtf8(isolate, value.Utf8().c_str())
++            .ToLocalChecked());
++  }
++}
++
++// __chameleon.setAttr(element, name, value) - set attribute
++// static
++void ChameleonBinding::SetAttrCallback(
++    const v8::FunctionCallbackInfo<v8::Value>& args) {
++  v8::Isolate* isolate = args.GetIsolate();
++  Element* el = UnwrapElement(isolate, args, 0, "__chameleon.setAttr");
++  if (!el)
++    return;
++
++  if (args.Length() < 3 || !args[1]->IsString() || !args[2]->IsString()) {
++    isolate->ThrowException(v8::Exception::TypeError(
++        v8::String::NewFromUtf8Literal(isolate,
++            "__chameleon.setAttr: needs (element, name, value)")));
++    return;
++  }
++
++  v8::String::Utf8Value name(isolate, args[1]);
++  v8::String::Utf8Value value(isolate, args[2]);
++  el->setAttribute(AtomicString(*name), AtomicString(*value));
++  args.GetReturnValue().Set(v8::Boolean::New(isolate, true));
++}
++
++// __chameleon.text(element) - get textContent
++// static
++void ChameleonBinding::TextCallback(
++    const v8::FunctionCallbackInfo<v8::Value>& args) {
++  v8::Isolate* isolate = args.GetIsolate();
++  Element* el = UnwrapElement(isolate, args, 0, "__chameleon.text");
++  if (!el)
++    return;
++
++  String text = el->textContent();
++  args.GetReturnValue().Set(
++      v8::String::NewFromUtf8(isolate, text.Utf8().c_str())
++          .ToLocalChecked());
++}
++
++// __chameleon.html(element) - get innerHTML
++// static
++void ChameleonBinding::HtmlCallback(
++    const v8::FunctionCallbackInfo<v8::Value>& args) {
++  v8::Isolate* isolate = args.GetIsolate();
++  Element* el = UnwrapElement(isolate, args, 0, "__chameleon.html");
++  if (!el)
++    return;
++
++  String html = el->innerHTML();
++  args.GetReturnValue().Set(
++      v8::String::NewFromUtf8(isolate, html.Utf8().c_str())
++          .ToLocalChecked());
++}
++
++// __chameleon.value(element) - get input value
++// static
++void ChameleonBinding::ValueCallback(
++    const v8::FunctionCallbackInfo<v8::Value>& args) {
++  v8::Isolate* isolate = args.GetIsolate();
++  Element* el = UnwrapElement(isolate, args, 0, "__chameleon.value");
++  if (!el)
++    return;
++
++  auto* input = DynamicTo<HTMLInputElement>(el);
++  if (input) {
++    String val = input->Value();
++    args.GetReturnValue().Set(
++        v8::String::NewFromUtf8(isolate, val.Utf8().c_str())
++            .ToLocalChecked());
++    return;
++  }
++
++  auto* select = DynamicTo<HTMLSelectElement>(el);
++  if (select) {
++    String val = select->valueForBinding();
++    args.GetReturnValue().Set(
++        v8::String::NewFromUtf8(isolate, val.Utf8().c_str())
++            .ToLocalChecked());
++    return;
++  }
++
++  // Fallback: try value attribute
++  String val = el->getAttribute(html_names::kValueAttr);
++  if (val.IsNull()) {
++    args.GetReturnValue().SetNull();
++  } else {
++    args.GetReturnValue().Set(
++        v8::String::NewFromUtf8(isolate, val.Utf8().c_str())
++            .ToLocalChecked());
+   }
+-  return nullptr;
+ }
+ 
+ }  // namespace blink
+diff --git a/third_party/blink/renderer/core/chameleon/chameleon_binding.h b/third_party/blink/renderer/core/chameleon/chameleon_binding.h
+index 3cb39ef69c..19f3ffc35d 100644
+--- a/third_party/blink/renderer/core/chameleon/chameleon_binding.h
++++ b/third_party/blink/renderer/core/chameleon/chameleon_binding.h
+@@ -6,8 +6,11 @@
+ #define THIRD_PARTY_BLINK_RENDERER_CORE_CHAMELEON_CHAMELEON_BINDING_H_
+ 
+ #include "third_party/blink/renderer/core/core_export.h"
++#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
++#include "third_party/blink/renderer/platform/heap/member.h"
+ #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+ #include "v8/include/v8-forward.h"
++#include "v8/include/v8-function-callback.h"
+ 
+ namespace blink {
+ 
+@@ -16,20 +19,63 @@ class Element;
+ 
+ // Installs __chameleon API on isolated world global objects.
+ // Only active when --chameleon-pierce is set.
+-// Provides:
+-//   __chameleon.click(element)  - trusted click (kFromUserAgent, isTrusted=true)
+-//   __chameleon.query(selector) - deep query through closed shadow roots
++//
++// API:
++//   __chameleon.click(element)           - trusted click (isTrusted:true)
++//   __chameleon.focus(element)           - focus element
++//   __chameleon.hover(element)           - dispatch mouseenter + mouseover
++//   __chameleon.type(element, text)      - set value + fire input/change events
++//   __chameleon.check(element, checked?) - toggle or set checkbox/radio
++//   __chameleon.select(element, value)   - select option by value
++//   __chameleon.submit(form)             - submit form
++//   __chameleon.query(selector)          - deep query (pierces closed shadows)
++//   __chameleon.queryAll(selector)       - deep queryAll (pierces closed shadows)
++//   __chameleon.attr(element, name)      - get attribute value
++//   __chameleon.setAttr(element, name, v)- set attribute value
++//   __chameleon.text(element)            - get textContent
++//   __chameleon.html(element)            - get innerHTML
++//   __chameleon.value(element)           - get input value
+ class CORE_EXPORT ChameleonBinding {
+  public:
+-  // Called when a script context is created. Installs __chameleon on
+-  // isolated world globals if --chameleon-pierce is set.
+   static void Install(v8::Local<v8::Context> context);
+ 
+  private:
+   static bool IsPierceEnabled();
++  static void AddFunction(v8::Isolate* isolate,
++                          v8::Local<v8::Context> context,
++                          v8::Local<v8::Object> obj,
++                          const char* name,
++                          v8::FunctionCallback callback);
++
++  // Action callbacks
+   static void ClickCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++  static void FocusCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++  static void HoverCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++  static void TypeCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++  static void CheckCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++  static void SelectCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++  static void SubmitCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++
++  // Query callbacks
+   static void QueryCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++  static void QueryAllCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++
++  // Read callbacks
++  static void AttrCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++  static void SetAttrCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++  static void TextCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++  static void HtmlCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++  static void ValueCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
++
++  // Helpers
+   static Element* DeepQuery(ContainerNode& root, const AtomicString& selector);
++  static void DeepQueryAll(ContainerNode& root,
++                           const AtomicString& selector,
++                           HeapVector<Member<Element>>& results);
++  static Element* UnwrapElement(v8::Isolate* isolate,
++                                const v8::FunctionCallbackInfo<v8::Value>& args,
++                                int index,
++                                const char* fn_name);
+ };
+ 
+ }  // namespace blink
+-- 
+2.53.0.windows.2
+

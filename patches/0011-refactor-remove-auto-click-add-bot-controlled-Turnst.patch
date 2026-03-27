@@ -1,7 +1,7 @@
 From e4006ca18e8983c219c9524dfda7f09f261cd7ae Mon Sep 17 00:00:00 2001
 From: Marcos <marcosbrendonaz@gmail.com>
 Date: Fri, 27 Mar 2026 02:07:14 -0300
-Subject: [PATCH 11/13] refactor: remove auto-click, add bot-controlled
+Subject: [PATCH 11/14] refactor: remove auto-click, add bot-controlled
  Turnstile solve via WebSocket CDP
 
 Remove hardcoded Turnstile auto-click (chameleon_autoclick.cc). Bots now
